@@ -1,0 +1,24 @@
+# Fixed Clash Royale game rules — not exposed via any API, so these are
+# hand-entered and need to be spot-checked periodically (Supercell has
+# changed elixir timing in past balance updates). Confirmed against the
+# Clash Royale Wiki as of 2026-08-14.
+
+elixir:
+  regen_seconds:
+    normal: 2.8            # 0:00-2:00 of a standard 1v1 match
+    double: 1.4             # 2:00 onward (final minute of regulation + most of overtime)
+    triple: 0.9             # final minute of overtime, or dedicated Triple Elixir game modes
+    two_v_two_normal: 3.6   # 2v2 regenerates ~30% slower than 1v1 at every phase
+    two_v_two_double: 1.8
+    two_v_two_triple: 1.2
+    infinite_mode: 0.4      # "Infinite Elixir" special game mode
+
+  phase_boundaries_seconds:
+    match_start: 0
+    double_elixir_starts: 120   # 2:00 into a standard 1v1 match
+    regulation_ends: 180        # 3:00 — overtime begins here if the match is tied
+    # Overtime's own total length, and exactly when triple elixir kicks in
+    # within it, weren't pinned down to an exact second during setup —
+    # documented only as "the last minute of Overtime." Verify directly
+    # against a real overtime match before relying on this for timing-
+    # sensitive logic.

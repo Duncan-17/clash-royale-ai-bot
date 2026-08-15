@@ -1,0 +1,14 @@
+# Phase 1 (control + capture plumbing) + Phase 2 (game data) — install with:
+#   pip install -r requirements.txt
+#
+# The full ML/RL stack from the roadmap (torch, stable-baselines3, ultralytics,
+# etc.) isn't needed until later phases — add it when you get there so this
+# install stays fast for now.
+
+pure-python-adb
+opencv-python
+numpy
+Pillow
+requests
+python-dotenv
+PyYAML

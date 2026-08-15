@@ -1,0 +1,143 @@
+LDPlayer setup + Phase 1/2/3 status (last updated 2026-08-15)
+
+=== QUICK COMMANDS (run from the project root, i.e. C:\Users\Duncan\Desktop\CRAI_Proj) ===
+
+All `python -m package.module` commands below must be run as modules from the
+project root — not as bare file paths (python perception\capture.py) — otherwise
+sibling packages (control, config, etc.) won't be importable. LDPlayer must
+already be running with ADB debugging on; most of these connect to it automatically.
+
+-- Connection / setup --
+adb.exe connect 127.0.0.1:5555              (from C:\LDPlayer\LDPlayer9 — needs the .\ prefix in PowerShell)
+adb.exe devices                              (confirm a device shows up)
+python test_connection.py                    (full Phase 1 smoke test: connect, screenshot, tap)
+python -m control.actions                    (tap-only smoke test — taps screen center)
+
+-- Screenshot capture --
+python -m perception.capture                 (saves test_screenshot.png from the current LDPlayer screen)
+python find_coords.py                        (click test_screenshot.png to print real pixel coords — for calibrating new regions)
+
+-- Card-in-hand detection --
+python -m perception.card_detector           (reads test_screenshot.png, prints best-guess card + confidence per hand slot)
+python -m perception.debug_card_match         (saves debug_hand_match.png — crop vs matched template, side by side)
+python -m perception.debug_live               (live overlay window during play — cards + elixir, see below. --interval N to set target refresh period)
+python -m perception.label_hand <s1> <s2> <s3> <s4>   (label the 4 current hand cards from test_screenshot.png)
+python -m perception.collect_cards            (capture + prompt for any UNKNOWN slot; add --relabel to re-check known slots too)
+python -m perception.auto_collect             (hands-off collection during a live match — cards AND elixir digits, same loop; run and just play; --seconds N to auto-stop; Ctrl+C otherwise)
+python -m perception.review_queue             (batch-label whatever auto_collect.py couldn't confidently recognize)
+python -m perception.seed_deck_from_catalog   (bootstrap config/deck.txt cards with zero examples from their catalog icon — run once per deck change)
+python -m perception.download_card_icons      (one-time: downloads all 122 catalog icons into assets/card_icons/ — reference art, not used for matching)
+
+-- Elixir counting --
+python -m perception.elixir_counter           (reads test_screenshot.png, prints number read + bar estimate + fraction)
+python -m perception.label_elixir <value>     (manual fallback: label the elixir value 0-10 currently shown in test_screenshot.png — usually unnecessary now, auto_collect.py self-labels elixir digits automatically)
+
+-- Game data (rarely needed — already fetched) --
+python fetch_card_roster.py                   (re-pulls the 122-card roster from the CR API into config/cards.json)
+python -m config.game_constants                (prints the loaded elixir regen timing / phase boundaries)
+
+-- One-time / historical (already run, kept for reference — do not re-run blindly) --
+python -m perception.migrate_templates         (old flat template layout -> per-card folder layout)
+python -m perception.fix_color_channels        (repaired the pre-fix RGB/BGR channel-swap bug in place)
+python -m perception.cleanup_pre_fix_files     (removed the pre-fix files that fix_color_channels.py couldn't safely repair)
+
+=== END QUICK COMMANDS ===
+
+LDPlayer environment fix (if it ever breaks again)
+
+Symptom chain we hit: LDPlayer stuck at 94% engine-starting → black main window that crashes on interaction → Diagnostics panel showing "Hyper-V: Not disabled" even after unchecking Hyper-V/Virtual Machine Platform/Windows Hypervisor Platform in "Turn Windows features on or off," and even after using LDPlayer's own "Fix now" button.
+
+Root cause: Windows 11 (25H2 on this machine) keeps Virtualization-Based Security (VBS) running via a UEFI lock, independent of the Hyper-V feature checkbox and Memory Integrity toggle. Confirm via msinfo32 → System Summary → "Virtualization-based security" (shows "Running" when this is the problem).
+
+Fix that actually worked (checkbox toggles and LDPlayer's "Fix now" alone did NOT stick):
+
+# Run from an elevated Command Prompt or PowerShell (Ctrl+Shift+Enter after
+# typing cmd in Start search, since right-click "Run as administrator"
+# wasn't available in the Start menu on this machine)
+bcdedit /set hypervisorlaunchtype off
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard" /v EnableVirtualizationBasedSecurity /t REG_DWORD /d 0 /f
+reg add "HKLM\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity" /v Enabled /t REG_DWORD /d 0 /f
+
+Then restart. Recheck msinfo32 — may need a second restart for the UEFI lock to fully release. Once VBS shows disabled, LDPlayer loads and renders normally.
+
+Reversible any time: flip Memory Integrity back on in Windows Security, or re-run the same reg add commands with /d 1 and bcdedit /set hypervisorlaunchtype auto, then restart.
+
+Machine specifics: Windows 11 64-bit 25H2, Ryzen 7 9800X3D, RTX 5080, LDPlayer 9.5.31.0, install path C:\LDPlayer\LDPlayer9\.
+
+Phase 1 plumbing — status: DONE
+
+Project lives at C:\Users\Duncan\Desktop\CRAI_Proj on Duncan's machine (connected via the desktop device bridge).
+
+Confirmed working end-to-end against a real LDPlayer + Clash Royale install (account created, tutorial completed):
+
+Screenshot capture (python -m perception.capture)
+ADB tap (EmulatorController.tap) — verified by tapping the Social nav icon and confirming the screen changed via before/after screenshot
+ADB swipe (EmulatorController.swipe) — verified scrolling the card collection list
+
+Notes for next session:
+
+Run scripts as modules from the project root (python -m perception.capture), not as bare paths (python perception\capture.py) — otherwise sibling packages (control, config, etc.) won't be importable.
+PowerShell needs .\ prefix to run adb.exe from its own folder (cd C:\LDPlayer\LDPlayer9, then .\adb.exe devices).
+If ADB ever reports "device offline" or "actively refused," it usually means the LDPlayer instance itself hung or crashed (seen once after opening Clash Royale for the first time) — check Task Manager for a frozen dnplayer/LdVBoxHeadless process, kill it, relaunch LDPlayer, then adb kill-server / start-server / connect 127.0.0.1:5555 again before retrying.
+The Android "Show taps" developer option does not render through LDPlayer's compositor — don't rely on it for debugging; use before/after screenshot comparison instead.
+Reference repos (ClashRoyaleBuildABot, py-clash-bot) cloned into vendor/ successfully.
+Phase 2 (game data) — status: DONE (with one deliberate gap, see below)
+
+Duncan already runs a separate, unrelated production project ("United Clash") — a Google Apps Script bound to a Google Sheet, hosted alongside some Cloudflare piece, that polls the Clash Royale API for clan war tracking. That project's API key was pasted into this chat by accident while sharing the script as a reference (the file's own header comment calls it a placeholder, but the pasted value was a real, live key). Per that same file's own stated policy, Duncan was advised to rotate it — confirm next session whether that key was actually rotated, since the United Clash automation will silently fail on the old key until it is.
+
+For CRAI's own key: created via developer.clashroyale.com, whitelisted to RoyaleAPI's fixed proxy IP 45.79.218.79 (not Duncan's home IP, which is dynamic — avoids the key silently breaking on ISP IP reassignment). Requests are routed through https://proxy.royaleapi.dev/v1 rather than the direct api.clashroyale.com host.
+
+fetch_card_roster.py confirmed working: pulled all 122 cards with elixir cost + rarity, saved to config/cards.json.
+
+Elixir regen timing confirmed and saved to config/game_constants.yaml (loadable via python -m config.game_constants): normal 2.8s, double 1.4s (starts at 2:00), triple 0.9s (last minute of overtime), plus 2v2 and Infinite Elixir mode variants. Sourced from the Clash Royale Wiki, 2026-08-15 — Supercell has changed these in past balance updates, so spot-check if anything timing-related in Phase 3+ behaves unexpectedly. Overtime's own exact total length wasn't pinned down precisely (only documented as "triple elixir starts in the last minute of Overtime") — flagged in the yaml file's own comments.
+
+Deliberately deferred, not forgotten: full combat stats (HP/damage/ hit speed per card/level). Investigated both sources the roadmap named — RoyaleAPI's community data mirror only carries metadata (elixir/rarity/ description), not combat numbers; deckshop.pro blocks automated fetching via robots.txt and splits stats across 122 separate per-card pages with no clean bulk source anyway. Decision (confirmed with Duncan): skip this for now since nothing in Phase 3 (perception) needs it — it only becomes relevant in Phase 4 (algorithmic matchup/targeting tables). When Phase 4 starts, the practical approach is probably hand-entering stats only for the cards actually in whatever deck is being worked with, rather than solving all 122 up front.
+
+Phase 3 (perception) — in progress
+Card-in-hand ID — status: working, approach validated, now with semi-automated data collection
+
+Files: config/hand_region.py (calibrated pixel geometry of the 4-card hand row), perception/card_detector.py (matching logic + template storage), perception/label_hand.py (adds a new card to the template library from the current test_screenshot.png), perception/debug_card_match.py (saves a visual side-by-side of crop vs matched template — use this whenever results look off, don't guess blindly).
+
+Important design decision, arrived at after a real failed attempt: first tried matching hand-slot crops against Supercell's official card catalog icon art (downloaded via perception/download_card_icons.py from the iconUrls already present in config/cards.json). This performed badly — all matches under 0.17 confidence, 3 of 4 wrong. Root cause, confirmed visually via debug_card_match.py: the catalog icons use different framing/zoom than the live hand-slot render, and don't include the card border + elixir-cost badge the hand UI overlays. Fix: abandoned catalog icons as the matching source entirely; templates are now built from real hand-slot screenshots via label_hand.py instead, so comparisons are pixel-consistent (same framing on both sides). This worked immediately — 1.000 confidence on a self-match, and critically, 0.98–0.999 confidence when tested against a completely different screenshot (different match, same 3 cards) — that second result is the one that actually proves the approach generalizes, not the trivial self-match one.
+
+CONFIDENCE_THRESHOLD = 0.85 in card_detector.py: below this, a slot reports UNKNOWN instead of a wrong best-guess. Validated against a real uncovered card (Giant, before it was added) scoring 0.470 — comfortably below threshold, confirming the cutoff correctly separates real matches from noise.
+
+Red/blue channel-swap bug found and fixed (2026-08-15): perception/capture.py's screenshot() previously returned RGB from PIL directly, but every cv2-based script in the project (card_detector, etc.) assumed BGR — the root cause of early templates looking "blue and yellow" instead of true colors. Fixed by converting RGB→BGR in capture.py itself. One-time repair tools: perception/fix_color_channels.py (fixed the channel order of every pre-fix file in place — a reversible swap, no data lost) and perception/cleanup_pre_fix_files.py (deleted the small set of pre-fix files that weren't safely repairable this way: literal seed.png files from migrate_templates.py's very first run, plus everything that was sitting in the unlabeled queue at the time — see that script's docstring for why those specifically couldn't just be channel-swapped back). Both are one-time/historical now; nothing currently in the repo is still affected.
+
+Template storage restructured (perception/migrate_templates.py, one-time): assets/hand_templates/<card_name>/ now holds MULTIPLE example images per card instead of one frozen file, since matching against many real examples (different animation moments, lighting, the low-elixir grey state) is what makes matching robust — not a single frozen reference. Files are stored as true single-channel grayscale (not color converted-to-look-grayscale), which also structurally rules out the channel-swap bug recurring.
+
+Semi-automated data collection pipeline added (2026-08-15): perception/auto_collect.py runs continuously during a live match, auto-filing high-confidence hand crops as new examples (deduped against near-duplicates, capped at MAX_EXAMPLES_PER_CARD=40 real examples/card) and queuing low-confidence crops to assets/unlabeled_queue/ instead of interrupting play. perception/review_queue.py batch-labels that queue afterward. perception/debug_live.py gives a live color-coded overlay (green=confident, orange=weak guess, red=unknown) so bad recognition is visible in real time without reading terminal output — safe to run alongside auto_collect.py in a second terminal. perception/collect_cards.py is the older one-shot manual alternative (capture once, prompt for any UNKNOWN slot) — still there for quick top-ups when not running a full auto_collect session.
+
+Deck-restricted matching added: config/deck.txt lists the current 8-card deck (one name per line); when present, auto_collect.py and debug_live.py restrict matching to just those 8 cards instead of the full template library — more accurate (no false match against an unrelated card) and any recognition failure is known for certain to be an under-represented example of one of those 8. perception/seed_deck_from_catalog.py bootstraps any deck card with zero real examples yet from its Supercell catalog icon (weak match on its own, but enough to steer the first real occurrence toward the right guess when matching is restricted to only 8 cards) — run this once per deck change, before the first collection session.
+
+Coverage as of 2026-08-15 (8 cards, all from the active deck in config/deck.txt, in assets/hand_templates/): archers (13), arrows (21), fireball (22), giant (21), knight (15), mini_pekka (21), minions (11), musketeer (26) — real examples, built up via auto_collect.py during actual play, well beyond the earlier single-example-per-card state. Unlabeled queue is currently empty (nothing awaiting review). download_card_icons.py's output in assets/card_icons/ (122 catalog icons) is used now only as seed_deck_from_catalog.py's fallback source, not for direct matching.
+
+How to add more cards: get into any match, python -m perception.auto_collect for hands-off collection (recommended), or python -m perception.label_hand <name1> <name2> <name3> <name4> / collect_cards.py for a manual one-shot. Coverage grows opportunistically as more matches are played — no need to force covering all 122 up front.
+
+Known unhandled edge case: cards you can't afford yet are dimmed/ grayed out in the live hand UI. That will look visually different from a full-elixir capture of the same card and will likely fail to match at high confidence — not yet tested or handled. Will need either a second "dimmed" template per card, or a normalization step (e.g. brightness/ saturation correction) before matching. Revisit when it actually causes a real missed detection, rather than solving preemptively.
+
+Elixir counting — status: DONE, verified live against real gameplay (2026-08-15)
+
+Files: perception/elixir_counter.py (both signals + combining logic), perception/label_elixir.py (adds a new value to the template library from the current test_screenshot.png, same pattern as label_hand.py).
+
+Design, refined from the original roadmap plan: NOT pure pixel counting alone (the original plan) — combines two signals. The NUMBER readout (white digit(s) over the droplet, one of 11 possible values 0-10) is template-matched the same way card_detector.py matches cards, and is the trusted signal for the integer part. The 10-segment BAR next to it is measured by pixel fill (algorithmic, no templates needed) for the FRACTIONAL progress toward the next point — confirmed genuinely continuous (not a discrete per-segment indicator) by comparing two live captures ~15s apart during calibration and seeing the partial-fill width shrink proportionally, consistent with real elixir regen rather than a fixed "next up" highlight.
+
+Bar geometry (BAR_LEFT_X=244.5, BAR_RIGHT_X=864.0, 10 equal segments) calibrated against a real 900x1600 capture by locating the segment tick-divider lines pixel-by-pixel — positions were identical across independent captures, so treated as fixed. Re-calibrate (same as hand_region.py) if LDPlayer's resolution setting ever changes.
+
+Real bug found and fixed during calibration: the elixir NUMBER glyph is drawn directly on top of the bar's own leftmost ~90px (overlapping segments 1-2), so a naive left-to-right pixel scan misread the digit's white/black pixels as bar fill — harmless when true fill already extended past that point, but badly wrong at low elixir (a true reading of 0 came back as 0.66). Two-part fix: (1) classify "filled" pixels using sum(R,G,B) > threshold AND green channel < 200, since both real fill colors (solid pink, and the lighter in-progress glow) have low green while the white digit text doesn't; (2) scan the bar right-to-left with per-row majority voting (not averaging raw pixel colors across sample rows first, which was blending digit black/white into false-positive intermediate colors) — scanning from the right confirms real fill from the unambiguous side of the bar, clear of the digit overlay entirely except at very low elixir. Verified against real captures after the fix: true 0 → 0.11, true 3 → 3.32, true 4 → 4.65-4.66, true 10 (2x-elixir mode) → 10.00.
+
+Digit template coverage: full, all 11 values (0-10) now have at least one real example in assets/elixir_templates/ after a single match run with auto_collect.py's self-labeling (2026-08-15) — some values (1, 5, 7) picked up several examples in that one match. A few landed in the wrong value's folder initially (self-labeling is bar-estimate-based, and the bar can briefly misread during transition animations — see limitation below); Duncan spotted and manually moved these, and no fix was needed beyond that.
+
+Verified live via debug_live.py (2026-08-15): reads correctly during normal play. The one known gap is transition states — while a card is actively being selected/placed, the bar/number readout is briefly unreliable (mid-animation). Deliberately not solving this at the perception layer: once cycle-tracking and known elixir costs exist (Phase 4), the system can cross-check/bridge these brief gaps from game logic (a played card's known cost + timing) rather than needing pixel-perfect reads through every animation frame. Revisit only if this actually causes a downstream problem.
+
+Auto-collection added (2026-08-15): auto_collect.py's existing per-match capture loop (originally cards-only) now also self-labels elixir digit examples in the same loop, no extra ADB calls. Manually typing python -m perception.label_elixir <value> with the right timing turned out to be impractical during real play (by the time you've read the value and typed the command, the value's often already changed) — auto-collection removes the timing problem entirely. Unlike cards, elixir can't bootstrap off its own template-match confidence (plenty of values may have zero templates on day one), so it self-labels off elixir_counter.py's BAR reading instead, which needs no templates at all: a frame is only auto-filed when the bar's continuous estimate is within ELIXIR_STABLE_MARGIN=0.12 of a whole number (i.e. we just ticked over to that value, not mid-regen), making the inferred integer label trustworthy even before any digit template exists for it. Much shorter tail than cards (11 possible values, most seen within a game or two), so there's no separate review-queue step — anything ambiguous is just skipped, not queued. python -m perception.label_elixir <value> still exists as a manual fallback but shouldn't normally be needed now.
+
+Known limitation, not yet handled: no "are we actually in a match" check — running the reader against a menu/transition screen (e.g. the post-match results screen) produces a plausible-looking but meaningless number instead of failing loudly, since the digit-match confidence is low but the bar-fill measurement doesn't know it's looking at nonsense either. Not a problem for the perception module itself (Phase 5's scripted bot will presumably already know match-state from elsewhere), but worth a guard if elixir_counter.py is ever called standalone.
+
+Unit/tower/enemy detection — status: not started
+
+Roadmap approach: fine-tune YOLOv8 starting from an existing Roboflow Universe Clash Royale model rather than annotating from zero (see roadmap §3 for the specific model URLs), served locally via roboflow/inference to avoid per-call API costs.
+
+Next up
+
+Elixir counting is done for now (full 0-10 template coverage, verified live) — more examples per value will keep accumulating naturally from ordinary auto_collect.py runs, no dedicated effort needed. Next real piece of scope: unit/tower detection (the YOLOv8 fine-tuning piece — meaningfully bigger than anything done so far, likely deserves its own dedicated stretch of work).

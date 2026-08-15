@@ -1,0 +1,16 @@
+# Your current 8-card deck, one card name per line, lowercase_with_underscores,
+# matching the naming convention used in assets/hand_templates/<name>/.
+#
+# auto_collect.py reads this at the start of every run and restricts
+# matching to just these 8 cards instead of the whole template library.
+#
+# Edit this file by hand whenever you change decks.
+
+archers
+arrows
+fireball
+giant
+knight
+minions
+mini_pekka
+musketeer
