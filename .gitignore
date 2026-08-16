@@ -4,4 +4,6 @@ __pycache__/
 *.pyc
 test_screenshot.png
 debug_hand_match.png
+debug_unit_detections.png
 scratch_*
+logs/

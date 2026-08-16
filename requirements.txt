@@ -12,3 +12,5 @@ Pillow
 requests
 python-dotenv
 PyYAML
+adbnativeblitz
+onnxruntime

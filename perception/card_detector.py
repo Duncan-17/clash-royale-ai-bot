@@ -33,7 +33,13 @@ import numpy as np
 from config.hand_region import hand_slot_regions
 
 TEMPLATE_DIR = "assets/hand_templates"
-MATCH_SIZE = (128, 128)  # both crop and every example get resized to this before comparing
+MATCH_SIZE = (64, 64)  # both crop and every example get resized to this before comparing.
+# Lowered from (128,128) on 2026-08-15 once capture stopped being the bottleneck (see
+# perception/capture.py) and card matching itself became the dominant per-frame cost
+# (~145ms at 128x128 against ~210 stored examples). Verified against real stored examples
+# before changing: discriminative margin between the correct card and the next-best-wrong
+# one stays ~0.14-0.30 at every size tested down to 32x32 — no accuracy tradeoff at 64x64,
+# just ~4x less matching time (~35ms for 4 slots).
 CONFIDENCE_THRESHOLD = 0.85  # below this, report UNKNOWN rather than a bad guess
 DUPLICATE_THRESHOLD = 0.995  # above this, a new example is treated as a near-duplicate and skipped
 MAX_EXAMPLES_PER_CARD = 40  # once a card has this many REAL examples on file, stop adding more
