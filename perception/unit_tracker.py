@@ -218,6 +218,26 @@ SIDE_MISMATCH_PENALTY_PX = 55  # added to a candidate's match distance when the 
 # the side-agreeing one still wins -- while guaranteeing a real unit always matches
 # SOMETHING rather than fragmenting. Sized larger than typical per-frame jitter but well
 # under MATCH_DISTANCE_PX, so it reorders candidates without excluding a lone one.
+ESTABLISHED_TRACK_AGE = 25  # a track matched this many times is "established" -- its class and
+# side stop being provisional and start resisting change (see ESTABLISHED_LOCK_HITS).
+ESTABLISHED_LOCK_HITS = 6  # consecutive disagreeing frames needed to relabel/flip an
+# ESTABLISHED track, vs CLASS_LOCK_HITS/SIDE_LOCK_HITS for a young one.
+#
+# Added 2026-08-20 from a real false positive Duncan caught: an "electro_giant played" event
+# in a match where no electro giant existed. Traced in
+# logs/debug_live_20260820_032538.jsonl to track id=6 -- his OWN ally Giant, alive since
+# t=9.58 and by then age 186 -- which the detector misread for exactly 2 frames as
+# "electro_giant / enemy" before reverting to "giant / ally". Two frames was enough to
+# satisfy the flat 2-hit debounce, so a 186-frame-old identity was overwritten by a blip,
+# and the side flip made an established ally look like a brand-new enemy unit to
+# opponent_play_tracker -- which is precisely how a phantom play event gets manufactured.
+#
+# A flat threshold is the wrong shape here: 2 frames is a reasonable bar for a track that's
+# only a few frames old and still resolving what it is, and far too low for one with a long
+# consistent history. Confidence in an identity should grow with the evidence behind it.
+# Deliberately still FINITE, not a permanent lock -- a genuinely sustained disagreement
+# (~half a second) must still win, since permanent locks are the exact failure mode that
+# caused this project's earlier side-persistence bugs.
 CLASS_LOCK_HITS = 2  # mirrors SIDE_LOCK_HITS -- see _resolve_class's docstring. A track's
 # reported class only changes to a NEW value after this many consecutive matched frames
 # agree on it; a single misclassified frame doesn't relabel the track (and, paired with
@@ -438,7 +458,7 @@ def _resolve_side(track: dict, det: dict, screenshot, tower_state=None):
         else:
             track["side_candidate"] = det_side
             track["side_candidate_hits"] = 1
-        if track["side_candidate_hits"] >= SIDE_LOCK_HITS:
+        if track["side_candidate_hits"] >= _required_lock_hits(track, SIDE_LOCK_HITS):
             candidate = track["side_candidate"]
             # A badge claiming "enemy" is only trustworthy if the unit's
             # CURRENT position doesn't make that literally impossible by
@@ -594,6 +614,15 @@ def _update_velocity(track: dict, new_center: tuple):
     )
 
 
+def _required_lock_hits(track: dict, base_hits: int) -> int:
+    """How many consecutive agreeing frames are needed to change an established
+    fact about `track`. Scales with how well-established the track is -- see
+    ESTABLISHED_TRACK_AGE/ESTABLISHED_LOCK_HITS for the real false positive this
+    fixes (a 186-frame-old ally Giant relabelled 'electro_giant / enemy' by a
+    2-frame blip)."""
+    return ESTABLISHED_LOCK_HITS if track["age"] >= ESTABLISHED_TRACK_AGE else base_hits
+
+
 def _resolve_class(track: dict, det: dict):
     """Updates track["name"] (the committed/reported class) and det["name"]
     based on this frame's detection, mirroring _resolve_side's same-value
@@ -608,7 +637,7 @@ def _resolve_class(track: dict, det: dict):
     else:
         track["class_candidate"] = det_name
         track["class_candidate_hits"] = 1
-    if track["class_candidate_hits"] >= CLASS_LOCK_HITS:
+    if track["class_candidate_hits"] >= _required_lock_hits(track, CLASS_LOCK_HITS):
         track["name"] = track["class_candidate"]
     det["name"] = track["name"]
 

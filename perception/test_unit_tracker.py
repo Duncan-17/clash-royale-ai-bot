@@ -10,7 +10,8 @@ Run: python -m perception.test_unit_tracker
 
 from unittest.mock import patch
 
-from perception.unit_tracker import MAX_MISSED_FRAMES, RECENT_VANISH_MAX_FRAMES, UnitTracker
+from perception.unit_tracker import (ESTABLISHED_TRACK_AGE, MAX_MISSED_FRAMES,
+                                     RECENT_VANISH_MAX_FRAMES, UnitTracker)
 
 
 def _bbox_at(cx, cy, w=50, h=50):
@@ -396,6 +397,37 @@ def test_conflicting_side_frame_does_not_split_an_established_track():
     print("test 17 OK: one conflicting side frame keeps the same track_id (no phantom split) and does not flip the side")
 
 
+def test_established_track_resists_a_short_class_and_side_blip():
+    """Real false positive Duncan caught: an "electro_giant played" event in a
+    match containing no electro giant. Traced in
+    logs/debug_live_20260820_032538.jsonl to track id=6 -- his OWN ally Giant,
+    age 186 -- misread for exactly 2 frames as "electro_giant / enemy" before
+    reverting. Two frames satisfied the flat debounce, so a 186-frame identity
+    was overwritten by a blip; the side flip then made an established ally look
+    like a brand-new enemy unit to opponent_play_tracker, manufacturing the
+    phantom play. An established track must need more than a blip to be
+    relabelled or flipped."""
+    def det(name, side):
+        return {"name": name, "side": side, "bbox": (595, 462, 745, 598), "confidence": 0.9}
+    tracker = UnitTracker()
+    for _ in range(ESTABLISHED_TRACK_AGE + 5):
+        result = tracker.update([det("giant", "ally")])
+    track_id = result[0]["track_id"]
+
+    for _ in range(2):  # the exact 2-frame blip from the real log
+        result = tracker.update([det("electro_giant", "enemy")])
+    assert result[0]["name"] == "giant", f"a 2-frame blip relabelled an established track: {result[0]['name']}"
+    assert result[0]["side"] == "ally", f"a 2-frame blip flipped an established track's side: {result[0]['side']}"
+    assert result[0]["track_id"] == track_id
+
+    # A genuinely SUSTAINED disagreement must still win -- this is a debounce,
+    # not a permanent lock (permanent locks caused this project's earlier bugs).
+    for _ in range(8):
+        result = tracker.update([det("electro_giant", "enemy")])
+    assert result[0]["name"] == "electro_giant", "sustained disagreement should still relabel"
+    print("test 18 OK: an established track resists a 2-frame class/side blip but still yields to sustained disagreement")
+
+
 def test_no_screenshot_falls_through_to_badge_debounce():
     """screenshot=None (the default, e.g. an existing caller that hasn't
     been updated) must not error, and must fall straight through to the
@@ -427,5 +459,6 @@ if __name__ == "__main__":
     test_building_targeter_does_not_reacquire_sideways_of_its_heading()
     test_non_building_unit_reacquires_sideways_via_the_wide_fallback()
     test_conflicting_side_frame_does_not_split_an_established_track()
+    test_established_track_resists_a_short_class_and_side_blip()
     test_no_screenshot_falls_through_to_badge_debounce()
     print("\nALL TESTS PASSED")

@@ -636,6 +636,25 @@ the hard blocker. The domain-standard solution is synthetic composition — cut 
 out once, paste onto backgrounds at known positions, and the labels are free and perfect.
 That is how comparable projects get good results in days rather than months.
 
+**Correction to an earlier claim in this doc (2026-08-20):** the persistence-gate fix was
+justified partly by citing a rejected `electro_giant` as a "real play" being wrongly
+downgraded. Duncan corrected this — there was no electro giant in that match at all. It was
+a HALLUCINATION, and the gate was right to reject it. Tracing it in
+logs/debug_live_20260820_032538.jsonl turned out to be more valuable than the original
+claim: it was track id=6, Duncan's OWN ally Giant (alive since t=9.58, age 186 by then),
+misread for exactly 2 frames as "electro_giant / enemy" before reverting to "giant / ally".
+Two consequences, both since fixed:
+- 2 frames satisfied the flat CLASS_LOCK_HITS/SIDE_LOCK_HITS debounce, so a 186-frame-old
+  identity was overwritten by a blip. Fixed with age-scaled thresholds
+  (ESTABLISHED_TRACK_AGE=25 / ESTABLISHED_LOCK_HITS=6): confidence in an identity should
+  grow with the evidence behind it. Still finite, not a permanent lock — permanent locks
+  caused this project's earlier side bugs.
+- The accompanying SIDE flip made an established ally look like a brand-new enemy unit to
+  opponent_play_tracker, which is exactly how a phantom play event is manufactured. This is
+  the general mechanism behind several historical "phantom play" reports, not a one-off.
+Verified separately that the visibility-based persistence check still rejects this
+hallucination, so that fix did not regress into accepting it.
+
 Known remaining detector gaps, all expected to be fixed BY training rather than around it:
 - Misses our own archers and sometimes mini-pekka. Confirmed genuine recall failure: still
   absent at conf 0.15, not an NMS artifact, and unchanged by fixing a real preprocessing
