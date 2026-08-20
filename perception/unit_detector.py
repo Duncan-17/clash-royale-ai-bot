@@ -71,9 +71,8 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
-from config.red_zones import in_tower_detection_exclusion, in_water_zone
+from config.red_zones import should_suppress_detection
 from perception import side_reader
-from perception.unit_metadata import is_air
 
 MODEL_PATH = "assets/models/units.onnx"
 
@@ -117,22 +116,14 @@ CLASS_NAMES = [
 
 
 def _should_suppress(name: str, bbox: tuple) -> bool:
-    """Rejects a detection whose CENTER falls in a known false-positive
-    zone. Two different kinds of zone here on purpose — see config/
-    red_zones.py's module docstring for why they're not the same thing:
-    tower detection-exclusion zones are deliberately LARGER than where a
-    troop can actually stand (they also cover the defending figure/
-    apparatus whose sprite was getting misclassified as a troop, not just
-    the tower's true footprint), while water zones ARE a genuine
-    impossible-position check (ground units really cannot be in the
-    river) and only apply to non-flying units."""
-    cx = (bbox[0] + bbox[2]) / 2
-    cy = (bbox[1] + bbox[3]) / 2
-    if in_tower_detection_exclusion(cx, cy):
-        return True
-    if not is_air(name) and in_water_zone(cx, cy):
-        return True
-    return False
+    """Thin alias kept for this module's own readability. The real rules now
+    live in config.red_zones.should_suppress_detection, moved there 2026-08-20
+    so perception/katacr_detector.py is held to exactly the same ones (it had
+    none at all before, which let river/out-of-bounds false positives through).
+    That move also ADDED an arena-bounds check this module didn't previously
+    have -- see red_zones.ARENA_X_MIN's comment for the real false positives
+    (a rock, a tree) that motivated it."""
+    return should_suppress_detection(name, bbox)
 
 
 class OnnxDetector:

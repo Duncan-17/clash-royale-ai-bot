@@ -134,6 +134,36 @@ ALLY_LEFT_NEUTRAL_ZONE = _mirror_y(ENEMY_LEFT_NEUTRAL_ZONE)
 ALLY_RIGHT_NEUTRAL_ZONE = _mirror_y(ENEMY_RIGHT_NEUTRAL_ZONE)
 
 
+# Horizontal limits of the PLAYABLE arena -- outside these is decorative scenery
+# (trees, rocks, grass), where no unit can ever legitimately be. Added 2026-08-20
+# after Duncan reported the new detector flagging units "out of bounds on the
+# edges": real, repeatable false positives were landing on a rock at cx~861 and
+# in the trees at cx~30 (an 'ice_spirit' and an 'archer_queen', both recurring at
+# the SAME coordinates across separate frames -- the signature of scenery being
+# misread, not a transient glitch).
+#
+# Deliberately NOT reusing _RIVER_X_SPAN (64, 887) even though it's tempting: the
+# river GRAPHIC extends past the playable tile area on the right, so 887 would
+# have let the cx~861 rock false-positive straight through. Derived instead from
+# a measured left edge (~66, which does happen to agree with the river's own left
+# bound) mirrored about BOARD_CENTER_X -- the arena is symmetric, independently
+# confirmed here by the two ally princess towers' footprint centers averaging
+# 451.75 against a BOARD_CENTER_X of 450. Verified visually by drawing both lines
+# over a real capture and checking they land on the checkered-tile boundary.
+ARENA_X_MIN = 66
+ARENA_X_MAX = 2 * BOARD_CENTER_X - ARENA_X_MIN  # 834
+
+# Vertical bounds are deliberately NOT defined here: perception/unit_detector.py's
+# own UNIT_Y_START/UNIT_Y_END arena crop already bounds detections vertically, and
+# both detectors run against that same crop.
+
+
+def in_arena_bounds(x, y) -> bool:
+    """Game fact: is (x, y) inside the playable arena horizontally. False means
+    decorative scenery where a unit can never legitimately be."""
+    return ARENA_X_MIN <= x <= ARENA_X_MAX
+
+
 def point_in_zone(x, y, zone) -> bool:
     x1, y1, x2, y2 = zone
     return x1 <= x <= x2 and y1 <= y <= y2
@@ -155,3 +185,32 @@ def in_tower_detection_exclusion(x, y) -> bool:
 
 def in_water_zone(x, y) -> bool:
     return any(point_in_zone(x, y, z) for z in WATER_ZONES)
+
+
+def should_suppress_detection(name: str, bbox: tuple) -> bool:
+    """Single source of truth for "this detection can't be a real unit here",
+    shared by perception/unit_detector.py and perception/katacr_detector.py so
+    both detectors are held to identical rules (added 2026-08-20 -- previously
+    this logic lived privately in unit_detector._should_suppress, and the new
+    KataCR path had no red-zone filtering at all, which is what let river and
+    out-of-bounds false positives through).
+
+    Three independent reasons to reject, of two different KINDS -- see this
+    module's own docstring for why that distinction matters:
+      - outside the playable arena horizontally (a GAME FACT)
+      - in the river, for ground units only (a GAME FACT; flying units
+        legitimately cross water, hence the transport check)
+      - inside a tower's detection-exclusion zone (a VISION-PIPELINE patch for
+        a known false-positive source, NOT a claim about where units can stand)
+    `name` is this project's underscore convention ('spear_goblin')."""
+    from perception.unit_metadata import is_air  # local import: avoids a config->perception
+    # import at module load, keeping config/ importable on its own.
+    cx = (bbox[0] + bbox[2]) / 2
+    cy = (bbox[1] + bbox[3]) / 2
+    if not in_arena_bounds(cx, cy):
+        return True
+    if in_tower_detection_exclusion(cx, cy):
+        return True
+    if not is_air(name) and in_water_zone(cx, cy):
+        return True
+    return False

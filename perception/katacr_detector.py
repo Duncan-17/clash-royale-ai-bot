@@ -58,6 +58,8 @@ import sys
 import cv2
 import numpy as np
 
+from config.red_zones import should_suppress_detection
+
 # The checkpoints pickle a custom class (katacr.yolov8.custom_model.CRDetectionModel),
 # so `katacr` must be importable to unpickle them at all. Only the narrow
 # custom_model chain is needed and it's jax-free -- it's their combo_detect ->
@@ -221,15 +223,30 @@ class KataCRDetector:
         results = []
         for k in final.tolist():
             name = all_names[k]
-            if name in NON_UNIT_CLASSES and not self.include_non_units:
+            is_non_unit = name in NON_UNIT_CLASSES
+            if is_non_unit and not self.include_non_units:
                 continue
             x1, y1, x2, y2 = all_xyxy[k].tolist()
             bbox = (max(0, int(round(x1 * sx))),
                     max(0, int(round(y1 * sy)) + ay1),   # + ay1: back to full-frame
                     min(full_w, int(round(x2 * sx))),
                     min(full_h, int(round(y2 * sy)) + ay1))
+            our_name = _to_our_name(name)
+            # Red-zone filtering, added 2026-08-20 per Duncan after live testing:
+            # this path originally had NONE, and produced exactly the false positives
+            # config/red_zones.py exists to kill -- a recurring 'the_log' dead-centre
+            # in the river band at (438, 672), an 'archer_queen' in the trees at
+            # cx~30, an 'ice_spirit' on a rock at cx~861. Uses the same shared rules
+            # as unit_detector.py so both detectors behave identically here.
+            #
+            # Deliberately NOT applied to the non-unit UI classes: tower bars, the
+            # deploy clock and the elixir readout legitimately live inside tower
+            # exclusion zones and outside the arena bounds, so suppressing them
+            # would throw away the very detections that make this model interesting.
+            if not is_non_unit and should_suppress_detection(our_name, bbox):
+                continue
             results.append({
-                "name": _to_our_name(name) if name not in NON_UNIT_CLASSES else name,
+                "name": name if is_non_unit else our_name,
                 "confidence": float(all_conf[k]),
                 # bel>0.5 is the model's own belonging split. Polarity is confirmed
                 # empirically against a known frame -- see this module's __main__.
