@@ -853,6 +853,13 @@ def main():
                          help="Path to write a JSONL debug log to (one line per frame). "
                               "Default: logs/debug_live_<timestamp>.jsonl")
     parser.add_argument("--no-log", action="store_true", help="Disable logging entirely")
+    parser.add_argument("--detector", choices=["onnx", "katacr"], default="onnx",
+                         help="Which unit detector to run. 'onnx' = the current "
+                              "build-a-bot units.onnx (YOLOv10m). 'katacr' = the "
+                              "EXPERIMENTAL KataCR YOLOv8l pair (see "
+                              "perception/katacr_detector.py) -- far more accurate in "
+                              "offline testing but ~457ms/frame on CPU vs ~36ms, so "
+                              "expect ~2fps until torch has CUDA available.")
     args = parser.parse_args()
     show_details = args.detailed
     unit_view_mode = UNIT_VIEW_MODES[0]  # "side" -- toggled live with 'u'
@@ -862,7 +869,18 @@ def main():
     capture = ScreenCapture(controller)
     card_templates = load_card_templates()
     elixir_templates = load_elixir_templates()
-    unit_detector = UnitDetector()
+    if args.detector == "katacr":
+        from perception.katacr_detector import KataCRDetector
+        # include_non_units=False: KataCR also detects towers/bars/clock/elixir, which
+        # are genuinely useful (see that module's docstring) but would be nonsense input
+        # to unit_tracker/opponent_play_tracker, which expect troops only. Filtered here
+        # so this stays a clean A/B of UNIT detection specifically.
+        unit_detector = KataCRDetector(include_non_units=False)
+        print("DETECTOR: KataCR YOLOv8l x2 (EXPERIMENTAL) — expect ~2fps on CPU.\n"
+              "          Its own belonging channel supplies ally/enemy, so sides here do\n"
+              "          NOT come from side_reader.py's badge reading.")
+    else:
+        unit_detector = UnitDetector()
     unit_tracker = UnitTracker()
     tower_tracker = TowerStateTracker()
     slot_grid = SlotGrid()
