@@ -240,10 +240,15 @@ BLACK = (0, 0, 0)
 GRAY = (150, 150, 150)
 DARK_GRAY = (70, 70, 70)
 PANEL_BG = (30, 30, 30)
-ALLY_COLOR = (255, 80, 0)  # blue (BGR) -- per Duncan's request (2026-08-16), matches
-# the in-game blue ally badge/health-bar color side_reader.py itself keys off of.
-ENEMY_COLOR = (0, 0, 255)  # red -- matches the in-game red enemy badge/health-bar color.
-UNKNOWN_SIDE_COLOR = (0, 165, 255)  # orange -- perception/side_reader.py found no
+# Palette softened 2026-08-20 per Duncan ("why is everything so low poly and neon").
+# The HUES still match the in-game ally-blue / enemy-red / uncertain-orange mapping he
+# asked for in 2026-08-16 -- what changed is that they're no longer fully-saturated
+# channel extremes (255,80,0)/(0,0,255)/(0,165,255), which is what read as "neon"
+# against real gameplay footage. These are pulled toward a softer, slightly desaturated
+# version of the same hue so they stay instantly distinguishable without vibrating.
+ALLY_COLOR = (255, 158, 72)   # BGR -> a calm azure
+ENEMY_COLOR = (86, 82, 240)   # BGR -> a soft coral red, not pure (0,0,255)
+UNKNOWN_SIDE_COLOR = (96, 186, 250)  # BGR -> warm amber -- perception/side_reader.py found no
 # color signal this frame (most commonly a fresh, undamaged ally troop with no
 # badge/bar shown yet at all -- see unit_detector.py's detect() docstring).
 # Reuses the same orange already used elsewhere in this file (color_for(),
@@ -502,10 +507,26 @@ def compact_tag(name: str, track_id: int, side: str = None, side_tier: int = Non
     return f"{prefix}{letters}{track_id}"
 
 
+def _alpha_rect(display, pt1, pt2, color, alpha):
+    """Blends a filled rect into `display` at `alpha` opacity, clipped to the
+    frame. Translucency (rather than the solid fills this file used before) is
+    most of what separates a readable overlay from the "low poly" look Duncan
+    flagged 2026-08-20 -- a label can sit over gameplay without punching an
+    opaque hole in it."""
+    h, w = display.shape[:2]
+    x1, y1 = max(0, pt1[0]), max(0, pt1[1])
+    x2, y2 = min(w, pt2[0]), min(h, pt2[1])
+    if x2 <= x1 or y2 <= y1:
+        return
+    roi = display[y1:y2, x1:x2]
+    overlay = np.full(roi.shape, color, dtype=np.uint8)
+    cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, dst=roi)
+
+
 def draw_label(display, text, x1, y1, y2, color, scale=0.5, thickness=1):
-    """Draws `text` on a SOLID dark background box, positioned just above
-    (x1, y1) with enough clearance that neither the text nor its own
-    background overlaps the box it's labeling -- falls back to just below
+    """Draws `text` on a translucent dark plate with a thin accent bar in
+    `color`, positioned just above (x1, y1) with enough clearance that neither
+    the text nor its plate overlaps the box it's labeling -- falls back to just below
     (x1, y2) when there's no room above. A thin border in `color` keeps the
     status color visible at a glance even though the text itself now sits
     on black rather than directly on the (often busy, similarly-colored)
@@ -514,24 +535,56 @@ def draw_label(display, text, x1, y1, y2, color, scale=0.5, thickness=1):
     Added 2026-08-20 per Duncan's direct report that the old bare colored-
     text-on-live-gameplay labels were unreadable (no contrast against
     moving footage) and could sit on top of the very box they described."""
-    (text_w, text_h), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thickness)
-    pad = 3
-    if y1 - text_h - baseline - pad * 2 > 0:
-        bg_y2 = y1 - pad
-        bg_y1 = bg_y2 - text_h - baseline - pad * 2
+    font = cv2.FONT_HERSHEY_DUPLEX  # softer/rounder strokes than HERSHEY_SIMPLEX
+    (text_w, text_h), baseline = cv2.getTextSize(text, font, scale, thickness)
+    pad_x, pad_y = 7, 5
+    accent_w = 3  # the colored bar down the plate's left edge
+    plate_h = text_h + baseline + pad_y * 2
+    if y1 - plate_h - 4 > 0:
+        plate_y2 = y1 - 4
+        plate_y1 = plate_y2 - plate_h
     else:
-        bg_y1 = y2 + pad
-        bg_y2 = bg_y1 + text_h + baseline + pad * 2
-    bg_x1, bg_x2 = x1, x1 + text_w + pad * 2
-    cv2.rectangle(display, (bg_x1, bg_y1), (bg_x2, bg_y2), BLACK, -1)
-    cv2.rectangle(display, (bg_x1, bg_y1), (bg_x2, bg_y2), color, 1)
-    cv2.putText(display, text, (bg_x1 + pad, bg_y2 - pad - baseline),
-                cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+        plate_y1 = y2 + 4
+        plate_y2 = plate_y1 + plate_h
+    plate_w = text_w + pad_x * 2 + accent_w
+    # Clamp horizontally so a label on a unit near the frame edge stays fully
+    # readable instead of running off-screen (caught 2026-08-20 while previewing
+    # the redesign on a real frame -- detections near the right edge rendered as
+    # a truncated "baby"/"ice spirit" with the rest of the plate cut off).
+    frame_w = display.shape[1]
+    plate_x1 = max(0, min(x1, frame_w - plate_w))
+    plate_x2 = plate_x1 + plate_w
+
+    # Dark translucent plate, then a solid accent bar carrying the status color.
+    # Colored TEXT on a colored plate was the old look; white text on a neutral
+    # plate with a color accent reads far more cleanly over busy footage.
+    _alpha_rect(display, (plate_x1, plate_y1), (plate_x2, plate_y2), (20, 20, 20), 0.72)
+    _alpha_rect(display, (plate_x1, plate_y1), (plate_x1 + accent_w, plate_y2), color, 0.95)
+    cv2.putText(display, text, (plate_x1 + accent_w + pad_x, plate_y2 - pad_y - baseline // 2),
+                font, scale, (245, 245, 245), thickness, cv2.LINE_AA)
+
+
+CORNER_FRAC = 0.28  # how much of each edge the corner brackets span
+CORNER_MIN_PX = 8
 
 
 def draw_box(display, box, color, label=None):
+    """Corner-bracket box rather than a full heavy rectangle (2026-08-20, per
+    Duncan: the old 3px closed rectangles looked "shitty and retro"). Brackets
+    read as a modern detection overlay, occlude far less of the unit inside,
+    and are anti-aliased -- the old cv2.rectangle calls were aliased, which is
+    most of what made them look blocky."""
     x1, y1, x2, y2 = box
-    cv2.rectangle(display, (x1, y1), (x2, y2), color, 3)
+    w, h = x2 - x1, y2 - y1
+    if w <= 0 or h <= 0:
+        return
+    cw = max(CORNER_MIN_PX, int(w * CORNER_FRAC))
+    ch = max(CORNER_MIN_PX, int(h * CORNER_FRAC))
+    t = 2
+    for (cx, dx) in ((x1, 1), (x2, -1)):
+        for (cy, dy) in ((y1, 1), (y2, -1)):
+            cv2.line(display, (cx, cy), (cx + dx * cw, cy), color, t, cv2.LINE_AA)
+            cv2.line(display, (cx, cy), (cx, cy + dy * ch), color, t, cv2.LINE_AA)
     if label:
         draw_label(display, label, x1, y1, y2, color)
 
@@ -560,17 +613,65 @@ def draw_spawn_icon_marker(display, icon_bbox, side):
     cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
     radius = max(SPAWN_MARKER_MIN_RADIUS, max(x2 - x1, y2 - y1) // 2 + 4)
     color = side_color(side)
-    # White outer ring first for contrast against any background color,
-    # then the side-colored ring just inside it, then a solid center dot.
-    cv2.circle(display, (cx, cy), radius + 4, WHITE, 2, cv2.LINE_AA)
-    cv2.circle(display, (cx, cy), radius, color, 5, cv2.LINE_AA)
-    cv2.circle(display, (cx, cy), 5, color, -1, cv2.LINE_AA)
-    # Solid-background label (draw_label, added 2026-08-20) instead of the original
-    # white-outline-stroke text -- consistent with every other gameplay-window label now,
-    # and positioned relative to the MARKER's own bounding circle (not icon_bbox directly)
-    # so it clears the ring itself, not just the tiny underlying icon detection.
-    draw_label(display, f"SPAWN: {side.upper()}", cx - radius, cy - radius, cy + radius,
-               color, scale=0.6, thickness=2)
+
+    # Redesigned 2026-08-20 per Duncan ("make the spawn icon recognition animation
+    # much cleaner"). Was three stacked hard circles (white ring + 5px colored ring
+    # + dot), which read as a crude bullseye. Now: a soft translucent halo, a thin
+    # anti-aliased ring, and four short cardinal ticks -- a targeting reticle rather
+    # than a bullseye. Still unmistakably a different SHAPE from the unit corner-
+    # brackets, which was the original reason it's a circle at all.
+    overlay_r = radius + 6
+    roi_pt1, roi_pt2 = (cx - overlay_r, cy - overlay_r), (cx + overlay_r, cy + overlay_r)
+    h, w = display.shape[:2]
+    rx1, ry1 = max(0, roi_pt1[0]), max(0, roi_pt1[1])
+    rx2, ry2 = min(w, roi_pt2[0]), min(h, roi_pt2[1])
+    if rx2 > rx1 and ry2 > ry1:
+        roi = display[ry1:ry2, rx1:rx2]
+        halo = roi.copy()
+        cv2.circle(halo, (cx - rx1, cy - ry1), radius, color, -1, cv2.LINE_AA)
+        cv2.addWeighted(halo, 0.18, roi, 0.82, 0, dst=roi)
+
+    cv2.circle(display, (cx, cy), radius, color, 2, cv2.LINE_AA)
+    tick_in, tick_out = radius - 5, radius + 5
+    for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        cv2.line(display, (cx + dx * tick_in, cy + dy * tick_in),
+                 (cx + dx * tick_out, cy + dy * tick_out), color, 2, cv2.LINE_AA)
+    cv2.circle(display, (cx, cy), 2, (245, 245, 245), -1, cv2.LINE_AA)
+
+    draw_label(display, f"SPAWN · {side.upper()}", cx - radius, cy - radius, cy + radius,
+               color, scale=0.5, thickness=1)
+
+
+def draw_tower_hp(display, box, tower_name, info, show_details):
+    """Draws a tower's state as an actual miniature PROGRESS BAR sitting just
+    above its calibrated bar region, rather than a corner-bracket box plus a
+    text percentage. Added 2026-08-20 per Duncan ("change how the health bar
+    reading looks") -- an HP fraction is a magnitude, and a filled bar shows a
+    magnitude at a glance in a way "68%" in a corner never does. The bar is
+    drawn OUTSIDE (above) the real region so it never covers the very pixels
+    tower_reader.py is measuring, which matters when eyeballing whether a
+    reading is right."""
+    x1, y1, x2, y2 = box
+    color, label = tower_color_and_label(tower_name, info)
+    bar_h = 7
+    by2 = y1 - 5
+    by1 = by2 - bar_h
+    _alpha_rect(display, (x1, by1), (x2, by2), (18, 18, 18), 0.75)
+
+    hp = info["hp_fraction"]
+    if info["destroyed"]:
+        # Unmistakably different from "0% but alive" -- a hatched/empty track with
+        # an X rather than a bar that merely happens to be empty.
+        cv2.line(display, (x1, by1), (x2, by2), color, 1, cv2.LINE_AA)
+        cv2.line(display, (x1, by2), (x2, by1), color, 1, cv2.LINE_AA)
+    elif hp is not None:
+        fill_w = int((x2 - x1) * max(0.0, min(1.0, hp)))
+        if fill_w > 0:
+            _alpha_rect(display, (x1, by1), (x1 + fill_w, by2), color, 0.9)
+    cv2.rectangle(display, (x1, by1), (x2, by2), color, 1, cv2.LINE_AA)
+
+    if show_details:
+        draw_label(display, f"{tower_name} · {label}", x1, by1, by2, color, scale=0.4)
 
 
 def tower_color_and_label(tower_name: str, info: dict):
@@ -965,9 +1066,8 @@ def main():
             draw_box(display, (int(BAR_LEFT_X), BAR_Y_TOP, int(BAR_RIGHT_X), BAR_Y_BOTTOM), (255, 200, 0), bar_label)
 
             tower_state = tower_tracker.update(screenshot)
-            for name, (x1, y1, x2, y2) in TOWER_BAR_REGIONS.items():
-                color, label = tower_color_and_label(name, tower_state[name])
-                draw_box(display, (x1, y1, x2, y2), color, f"{name} {label}" if show_details else label)
+            for name, region in TOWER_BAR_REGIONS.items():
+                draw_tower_hp(display, region, name, tower_state[name], show_details)
 
             t0 = time.time()
             live_units = unit_tracker.update(unit_detector.detect(screenshot), screenshot=screenshot, tower_state=tower_state)
@@ -1003,7 +1103,17 @@ def main():
             # occluded unit currently is.
             for u in live_units:
                 color = unit_view_color(u, unit_view_mode)
-                unit_label = compact_tag(u["name"], u["track_id"], u["side"], u.get("side_tier")) if show_details else None
+                # Full readable troop NAME, not just initials (2026-08-20, Duncan:
+                # "add a name tag to them so i know what troop its seeing"). The old
+                # compact_tag ("EMP7") was built for the panel's dense grid, where
+                # space is genuinely tight -- on the gameplay window there's room for
+                # the real name, and initials made it impossible to tell at a glance
+                # what the model actually thought it saw. Track id is kept (it's how
+                # you follow one unit across frames) but de-emphasized after a middot.
+                pretty = u["name"].replace("_", " ")
+                unit_label = f"{pretty} · {u['track_id']}"
+                if show_details:
+                    unit_label += f"  {u['confidence']:.2f}"
                 draw_box(display, u["bbox"], color, unit_label)
 
             t0 = time.time()
