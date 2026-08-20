@@ -23,6 +23,7 @@ from perception.tower_reader import (
 
 REAL_CAPTURE = "assets/tower_reader_calibration/left_princess_towers_destroyed.png"
 DAMAGED_CAPTURE = "assets/tower_reader_calibration/ally_left_princess_damaged.png"
+ENEMY_DAMAGED_CAPTURE = "assets/tower_reader_calibration/enemy_left_princess_damaged.png"
 
 
 def test_real_capture_hp_fractions():
@@ -177,6 +178,22 @@ def test_zero_flash_around_each_hit_does_not_overwrite_the_prior_value():
     print(f"test 10 OK: a 2-frame zero flash around a hit doesn't overwrite the prior value, but the real new value still confirms ({shown})")
 
 
+def test_real_damaged_enemy_princess_tower_reads_partial_fill():
+    """Same bug as the ally side, found separately (2026-08-20): the
+    princess-ENEMY EMPTY_BGR had also been sampled from a full-health
+    capture, so it captured the dark border/bezel row rather than any real
+    empty-fill colour, and the tower snapped to 0% the instant it took any
+    damage. Corrected from a real damaged-enemy column scan (filled
+    BGR(93,37,224) -> empty BGR(73,49,92)). This locks in that a damaged
+    enemy tower reads a real partial value rather than 0."""
+    img = cv2.imread(ENEMY_DAMAGED_CAPTURE)
+    assert img is not None, f"couldn't load {ENEMY_DAMAGED_CAPTURE}"
+    hp = read_all_towers(img)
+    assert hp["enemy_left"] is not None and 0.4 < hp["enemy_left"] < 0.8,         f"expected enemy_left a real partial value (~0.6), got {hp['enemy_left']}"
+    assert hp["enemy_right"] is not None and hp["enemy_right"] > 0.9,         f"undamaged enemy_right should still read near-full: {hp['enemy_right']}"
+    print(f"test 11 OK: a real damaged ENEMY princess tower reads its true partial fill ({hp['enemy_left']:.2f}), not 0%")
+
+
 def test_hp_value_debounced_against_a_single_spurious_reading():
     """The real bug this fixes (2026-08-20 live match): a fully-healthy
     tower's bar occasionally reads a wildly wrong single-frame value
@@ -223,6 +240,7 @@ def test_short_miss_streak_no_longer_falsely_confirms_destroyed():
 if __name__ == "__main__":
     test_real_capture_hp_fractions()
     test_real_damaged_princess_tower_reads_the_true_partial_fill()
+    test_real_damaged_enemy_princess_tower_reads_partial_fill()
     test_tracker_confirms_destroyed_after_the_debounce_window()
     test_a_single_miss_does_not_confirm_destroyed()
     test_destroyed_is_permanent_even_if_a_bar_reappears()

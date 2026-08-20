@@ -153,11 +153,21 @@ EMPTY_BGR = {
     # rows (columns ~92/96 out of ~96 usable width, matching Duncan's own "~90+%" estimate
     # almost exactly) -- not a guess this time, a direct real-data measurement.
     ("princess", "ally"): np.array([115.0, 81.0, 66.0]),
-    # Enemy side matches a real (if incidental) capture sample already (see module
-    # docstring) -- same METHODOLOGY concern as the old ally guess above (not a from-
-    # scratch damaged-tower measurement), worth the same scrutiny if a similar bug ever
-    # shows up on the enemy side.
-    ("princess", "enemy"): np.array([29.0, 2.0, 107.0]),
+    # Princess-tower enemy empty color: corrected 2026-08-20 from a REAL damaged-enemy
+    # capture, after Duncan reported enemy towers still snapping to 0% on any damage.
+    # The old value (BGR 29,2,107) had exactly the same flaw the ally entry did, and for
+    # exactly the same reason -- it was sampled from a full-health capture, where the
+    # bar has no empty section to measure, so it actually captured the dark BORDER/bezel
+    # row (present at every HP level). That made _best_row prefer the border over the
+    # real bar the moment any damage appeared. Real measurement, from a column scan
+    # across a genuinely damaged enemy tower (conflict_20260820_025922_748046.png,
+    # y=243): a clean transition from filled BGR(93,37,224) to empty BGR(73,49,92) at
+    # ~61% width. Note the enemy empty tone is a muted grey-purple, NOT a dark red --
+    # the same "empty is desaturated grey, not a darker version of the fill hue" lesson
+    # the ally side taught. This is the third and final EMPTY_BGR entry to be corrected
+    # this way; the king-tower pair was measured from a genuinely damaged capture from
+    # the start and never had the problem.
+    ("princess", "enemy"): np.array([73.0, 49.0, 92.0]),
     # King tower empty colors: REAL data from the same ground-truth-validated capture as
     # the king FILLED_BGR entries above -- notably NOT close to the princess-tower empty
     # colors (more of a muted gray-blue/gray-red than a dark-but-same-hue shade), which is

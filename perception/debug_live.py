@@ -564,27 +564,36 @@ def draw_label(display, text, x1, y1, y2, color, scale=0.5, thickness=1):
                 font, scale, (245, 245, 245), thickness, cv2.LINE_AA)
 
 
-CORNER_FRAC = 0.28  # how much of each edge the corner brackets span
-CORNER_MIN_PX = 8
+BOX_CORNER_RADIUS = 9  # rounded-corner radius; clamped to the box's own size below
+BOX_THICKNESS = 2
 
 
-def draw_box(display, box, color, label=None):
-    """Corner-bracket box rather than a full heavy rectangle (2026-08-20, per
-    Duncan: the old 3px closed rectangles looked "shitty and retro"). Brackets
-    read as a modern detection overlay, occlude far less of the unit inside,
-    and are anti-aliased -- the old cv2.rectangle calls were aliased, which is
-    most of what made them look blocky."""
+def draw_box(display, box, color, label=None, radius=BOX_CORNER_RADIUS,
+             thickness=BOX_THICKNESS):
+    """A fully-closed rounded rectangle, anti-aliased (2026-08-20, revised: the
+    original 3px aliased cv2.rectangle looked "shitty and retro"; a corner-
+    brackets-only version replaced it, and Duncan then asked for full rounded
+    squares instead -- he liked the new colors but wanted the box closed).
+
+    cv2 has no rounded-rect primitive, so this is 4 straight edges plus 4
+    quarter-circle ellipse arcs. Radius is clamped to half the shorter side so
+    small boxes (a Skeleton, a Bat) degrade to a normal rounded shape instead
+    of the arcs overlapping and rendering inside out."""
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
     if w <= 0 or h <= 0:
         return
-    cw = max(CORNER_MIN_PX, int(w * CORNER_FRAC))
-    ch = max(CORNER_MIN_PX, int(h * CORNER_FRAC))
-    t = 2
-    for (cx, dx) in ((x1, 1), (x2, -1)):
-        for (cy, dy) in ((y1, 1), (y2, -1)):
-            cv2.line(display, (cx, cy), (cx + dx * cw, cy), color, t, cv2.LINE_AA)
-            cv2.line(display, (cx, cy), (cx, cy + dy * ch), color, t, cv2.LINE_AA)
+    r = max(0, min(radius, w // 2, h // 2))
+    t, aa = thickness, cv2.LINE_AA
+    # straight edges (inset by the corner radius at each end)
+    cv2.line(display, (x1 + r, y1), (x2 - r, y1), color, t, aa)
+    cv2.line(display, (x1 + r, y2), (x2 - r, y2), color, t, aa)
+    cv2.line(display, (x1, y1 + r), (x1, y2 - r), color, t, aa)
+    cv2.line(display, (x2, y1 + r), (x2, y2 - r), color, t, aa)
+    if r > 0:
+        for (cx, cy, start) in ((x1 + r, y1 + r, 180), (x2 - r, y1 + r, 270),
+                                (x2 - r, y2 - r, 0), (x1 + r, y2 - r, 90)):
+            cv2.ellipse(display, (cx, cy), (r, r), 0, start, start + 90, color, t, aa)
     if label:
         draw_label(display, label, x1, y1, y2, color)
 
