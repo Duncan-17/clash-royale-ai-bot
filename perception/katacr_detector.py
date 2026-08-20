@@ -109,7 +109,32 @@ NON_UNIT_CLASSES = {
 }
 
 
+# KataCR names that don't simply hyphen-swap into this project's taxonomy. Without
+# this, 'mini-pekka' became 'mini_pekka' while everything downstream
+# (unit_metadata.TARGET_TYPE, spawn_data, red_zones' is_air lookup) keys on
+# 'minipekka' -- so a real Mini P.E.K.K.A. silently missed every metadata lookup.
+# Found 2026-08-20 by diffing every KataCR class name against unit_detector.CLASS_NAMES.
+NAME_OVERRIDES = {"mini-pekka": "minipekka"}
+
+# Classes suppressed as noise for unit-tracking purposes. Two groups:
+#  - padding_*: not real classes at all, just taxonomy filler in their label list
+#    (padding_belong is the belonging channel; padding_0/1/2 are pure slots). These
+#    surfaced as bogus detections until filtered.
+#  - projectile/VFX classes: real KataCR classes, but they're transient effects rather
+#    than units, and Duncan reported 'dirt' firing constantly in a match where neither
+#    player had Miner or Goblin Drill (its only legitimate sources). Feeding these to
+#    unit_tracker/opponent_play_tracker would manufacture phantom "units".
+# Kept separate from NON_UNIT_CLASSES because those (bars, clock, elixir) are WANTED
+# signals we deliberately surface; these are simply noise.
+NOISE_CLASSES = {
+    "padding_0", "padding_1", "padding_2", "padding_belong",
+    "axe", "bomb", "dirt", "goblin-ball", "skeleton-king-skill",
+}
+
+
 def _to_our_name(katacr_name: str) -> str:
+    if katacr_name in NAME_OVERRIDES:
+        return NAME_OVERRIDES[katacr_name]
     return katacr_name.replace("-", "_")
 
 
@@ -223,6 +248,8 @@ class KataCRDetector:
         results = []
         for k in final.tolist():
             name = all_names[k]
+            if name in NOISE_CLASSES:
+                continue
             is_non_unit = name in NON_UNIT_CLASSES
             if is_non_unit and not self.include_non_units:
                 continue
