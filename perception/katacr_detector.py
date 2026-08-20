@@ -148,13 +148,20 @@ class KataCRDetector:
     side.onnx with the algorithmic perception/side_reader.py)."""
 
     def __init__(self, model_paths=None, conf=DEFAULT_CONF, iou=DEFAULT_IOU,
-                 include_non_units=True, device=None, half=None):
+                 include_non_units=True, device=None, half=None, use_bar_sides=True):
         import torch  # imported lazily -- torch is only needed for this experimental path
         from ultralytics import YOLO
         self._torch = torch
         self.conf = conf
         self.iou = iou
         self.include_non_units = include_non_units
+        # When set, a unit's side is taken from its associated health-bar/level-badge
+        # detection rather than the model's own per-unit belonging read. See
+        # perception/bar_reader.py for why the bar is the better evidence: a troop sprite
+        # carries no team colour at all, while a bar literally is colour-coded by team.
+        # Units with no associated bar keep the per-unit reading (a fresh undamaged ally
+        # troop legitimately shows no bar).
+        self.use_bar_sides = use_bar_sides
         # These are YOLOv8l at 576x896 -- roughly 12x the compute of the YOLOv10m@480x352
         # this replaces, so CPU inference measured ~457ms/frame (~2fps) and was reported
         # unwatchable in the live debug view. GPU is effectively required for live use.
@@ -251,8 +258,6 @@ class KataCRDetector:
             if name in NOISE_CLASSES:
                 continue
             is_non_unit = name in NON_UNIT_CLASSES
-            if is_non_unit and not self.include_non_units:
-                continue
             x1, y1, x2, y2 = all_xyxy[k].tolist()
             bbox = (max(0, int(round(x1 * sx))),
                     max(0, int(round(y1 * sy)) + ay1),   # + ay1: back to full-frame
@@ -281,6 +286,19 @@ class KataCRDetector:
                 "bbox": bbox,
                 "raw_name": name,
             })
+
+        # Bar-based side correction runs on the FULL detection list (bars included),
+        # then the caller's non-unit filter is applied afterwards -- doing it in the
+        # other order would discard the bars this depends on.
+        if self.use_bar_sides:
+            from perception.bar_reader import associate_bars
+            for unit_idx, bar in associate_bars(results).items():
+                results[unit_idx]["side"] = bar["side"]
+                results[unit_idx]["side_source"] = "bar"
+                results[unit_idx]["bar_bbox"] = bar["bbox"]
+
+        if not self.include_non_units:
+            results = [d for d in results if d["raw_name"] not in NON_UNIT_CLASSES]
         return results
 
 

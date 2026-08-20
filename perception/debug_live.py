@@ -1120,7 +1120,13 @@ def main():
                 # what the model actually thought it saw. Track id is kept (it's how
                 # you follow one unit across frames) but de-emphasized after a middot.
                 pretty = u["name"].replace("_", " ")
-                unit_label = f"{pretty} · {u['track_id']}"
+                # A trailing bar glyph marks a side that came from an associated
+                # health-bar/level-badge detection rather than the model's own
+                # per-unit belonging read -- the far more trustworthy of the two
+                # (see perception/bar_reader.py). Lets a wrong side be judged
+                # against WHY it was chosen, not just that it was.
+                src = " ▮" if u.get("side_source") == "bar" else ""
+                unit_label = f"{pretty} · {u['track_id']}{src}"
                 if show_details:
                     unit_label += f"  {u['confidence']:.2f}"
                 draw_box(display, u["bbox"], color, unit_label)
