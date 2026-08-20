@@ -198,7 +198,27 @@ OWN_PLAY_WINDOW_SECONDS = 2.0  # how long our own confirmed play of a card
 # apart. The position check (RIVER_Y_TOP) is what keeps this window from
 # being too permissive — see _check_own_play_collision.
 
-PLAY_PERSISTENCE_MIN_AGE = 5  # minimum confirmed-frame age a track must
+PLAY_PERSISTENCE_MIN_AGE = 6  # RAISED from 5, and demoted to a SECONDARY path on 2026-08-20 after Duncan reported a real
+# goblin_hut being detected but never reported as played. Traced in
+# logs/debug_live_20260820_032538.jsonl: the hut was first tracked at t=30.4 and its group
+# closed at t=30.9 (one GROUPING_WINDOW_SECONDS later) with the track not yet at age 5, so
+# it was downgraded to "uncertain" -- along with a real electro_giant and knight in the same
+# match.
+#
+# Two things were wrong with the old value. First, it's a FRAME count evaluated at a fixed
+# WALL-CLOCK moment, so what it actually demands depends entirely on framerate -- it was
+# tuned at ~12fps and silently became stricter as the pipeline's speed changed. Second and
+# more important, it exists purely to compensate for the OLD detector's phantom tracks (2-4
+# confirmed frames then gone forever), which is the exact failure mode the KataCR model
+# doesn't exhibit. A guard against a problem the new detector doesn't have was rejecting
+# real plays instead.
+#
+# 2 still kills genuine single-frame blips (which unit_tracker's own MIN_HITS_TO_CONFIRM
+# already filters first) while letting a real building through. This heuristic is a strong
+# candidate for REMOVAL once the detector swap is confirmed -- see Project_Status's
+# "compensation layers to retire" list.
+#
+# Original rationale, kept for context: minimum confirmed-frame age a track must
 # reach by the time its candidate group closes before a "played" outcome
 # is trusted, rather than downgraded to "uncertain". Added 2026-08-16
 # against the first EXHAUSTIVE ground-truth match log (every real play
@@ -486,7 +506,22 @@ class OpponentPlayTracker:
         this frame's live enemy tracks) — a track fully dropped from
         alive_by_id by close time, or one that never accumulated enough
         confirmed frames before going invisible for good, fails this."""
-        return any(alive_by_id.get(tid, {}).get("age", 0) >= PLAY_PERSISTENCE_MIN_AGE for tid in track_ids)
+        for tid in track_ids:
+            entry = alive_by_id.get(tid)
+            if entry is None:
+                continue  # fully dropped by close time -- the clearest phantom signature
+            # A real unit is normally STILL VISIBLE when its group closes; a phantom has
+            # stopped being detected by then (unit_tracker keeps it briefly on its grace
+            # period, so it lingers in alive_by_id with visible=False). Visibility is the
+            # signal that actually separates the two, and unlike a raw frame count it
+            # doesn't silently change meaning when the pipeline's framerate does --
+            # which is exactly how a real goblin_hut got rejected (see
+            # PLAY_PERSISTENCE_MIN_AGE's comment). The age floor is kept as a secondary
+            # path so a unit that's briefly occluded right at close time can still
+            # qualify on the strength of an already-established track.
+            if entry.get("visible", True) or entry.get("age", 0) >= PLAY_PERSISTENCE_MIN_AGE:
+                return True
+        return False
 
     def _finalize_played(self, name, count, track_ids, bboxes, now, slug, cost, alive_by_id):
         """Every "-> played" outcome funnels through here so
