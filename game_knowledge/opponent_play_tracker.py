@@ -709,14 +709,28 @@ class OpponentPlayTracker:
                 f"of {expected} (need at least {_burst_min_count(expected)} confirmed together) — "
                 f"possible missed/extra detection")
 
-        # 5. Ordinary single-unit card, the common case.
-        if count == 1:
-            slug, cost = self._card_slug_and_cost(name, count)
-            return self._finalize_played(name, count, track_ids, bboxes, now, slug, cost, alive_by_id)
-
-        # 6. Unexpected multiples of what should be a single-unit card.
-        return self._uncertain_event(name, count, track_ids, bboxes, now,
-            f"{count} {name} appeared together; {name} is normally a single-unit card")
+        # 5. Ordinary single-unit card -- INCLUDING when several appear together.
+        #
+        # Multiples used to be downgraded to "uncertain" here ("N X appeared together; X is
+        # normally a single-unit card"). Removed 2026-08-20 on Duncan's explicit direction
+        # after a full live game: "it is strangely doubting a card is correct if it sees 2+
+        # of a card that is played in singles. This is bad and shouldn't exist, it is too
+        # dangerous with how weak the unit tracking can be."
+        #
+        # He's right, and the reasoning matters. Seeing two Giants is not evidence that
+        # either Giant is fake -- it's the ordinary result of a real Giant played twice, OR
+        # of tracking splitting one unit into two IDs (a failure mode this project has hit
+        # repeatedly and documented: mid-walk tracking gaps, side-flip splits, reacquisition
+        # under a new ID). In BOTH cases at least one real play definitely happened, so
+        # answering "uncertain" throws away information we actually have and is strictly
+        # worse than reporting the play. The old branch effectively punished the play
+        # detector for the tracker's weaknesses.
+        #
+        # count is still reported on the event, so a downstream consumer that cares about
+        # duplicate-vs-genuine-repeat can reason about it with the extra context this layer
+        # doesn't have (e.g. opponent elixir plausibility, once that exists).
+        slug, cost = self._card_slug_and_cost(name, count)
+        return self._finalize_played(name, count, track_ids, bboxes, now, slug, cost, alive_by_id)
 
     def update(self, tracked_units: list, now: float, own_recent_plays: list = (), screenshot=None) -> list:
         """tracked_units: perception.unit_tracker.UnitTracker.current_state()'s

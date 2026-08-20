@@ -692,12 +692,63 @@ Best architecture is model-localizes -> existing pixel logic reads the fill insi
 deletes every hardcoded tower coordinate, which is what caused all three EMPTY_BGR bugs
 this session.
 
+LIVE-TEST RESULTS, 2026-08-20 (final session of the day)
+-------------------------------------------------------
+Duncan's overall verdict on the KataCR detector after a full game: "Overall, this is
+working much better." Three issues raised, two fixed same session, one still open.
+
+FIXED — "doubting a card if it sees 2+ of a card played in singles."
+Removed outright, on his explicit direction ("this is bad and shouldn't exist, it is too
+dangerous with how weak the unit tracking can be"). Two Giants is not evidence either
+Giant is fake: it's either a real card played twice, OR tracking splitting one unit into
+two IDs (a failure mode documented repeatedly here — mid-walk gaps, side-flip splits,
+reacquisition under a new ID). In BOTH cases at least one real play happened, so answering
+"uncertain" discards information we actually have. The old branch effectively punished the
+play detector for the tracker's weaknesses. `count` is still on the event so a future
+opponent-elixir consumer can reason about duplicates with context this layer lacks.
+
+FIXED — tower destruction took far too long to flag.
+DESTROYED_CONFIRM_FRAMES 60 -> 15, per "it's accurate enough at reading the health that you
+should flag it in roughly 1/4 the time." 60 was set defensively when the HP reading itself
+was unreliable (all three princess EMPTY_BGR values were wrong at the time, and a false
+'destroyed' is permanent). Those are now fixed and verified against real damaged captures,
+so the guarded input is far more trustworthy and the margin can come down.
+
+STILL OPEN — goblin_hut intermittently never reported as played.
+NOT fixed; do not assume it is. What's actually known, from
+logs/debug_live_20260820_034436.jsonl:
+- It is INTERMITTENT, not total. Two `goblin_hut played` events DID fire (t=4.48, t=56.83),
+  but later huts (tracks first seen ~t=76 and ~t=125) produced no event at all.
+- Replaying that same log's tracked_units back through OpponentPlayTracker offline produces
+  14 events where the live run recorded 7 — so the discrepancy is in HOW debug_live drives
+  the tracker, not in the tracker's own logic. Ruled out already: passing `screenshot`
+  (tested, identical event count) and stale code (the log postdates every commit).
+- A likely lead, not yet confirmed: several later huts first appear in the enemy set with a
+  high `age` already (e.g. id=38 at age 68, id=5 at age 205), meaning the track existed as
+  ally/unknown for a long time and only later flipped to enemy. `update()` detects new plays
+  via `current_ids - self._prev_ids` on the ENEMY subset, so a late side-flip looks like a
+  brand-new enemy track — which should fire an event, so the question is why some do and
+  some don't. Start there.
+- Duncan also observed spear goblins being attributed to a hut that was never marked played.
+  Worth confirming whether that attribution came from the panel's live text vs a logged
+  event, since this log contains no spear_goblin events carrying source_card=goblin_hut.
+
+A METHOD NOTE for whoever picks this up: I misread this log twice in one session — first
+because the file was still being written while I read it (counted 1 event when there were 7),
+and separately by citing a hallucinated `electro_giant` as a real play. Re-read logs after the
+match has fully ended, and check a claimed "real play" against Duncan's own account before
+building on it.
+
 Immediate next steps, in order:
-1. Live-test the current branch end-to-end and decide whether to make KataCR the default.
-2. Calibrate `config/tv_royale_regions.py` and get the auto-labeller running.
-3. Fine-tune from KataCR's checkpoints on our own captures + their MIT sprite set, adding
-   the post-2024 cards neither model has.
-4. Then retire the compensation layers listed above.
+1. **Live-test the current branch** and decide whether KataCR becomes the default detector.
+   Everything is on `experiment/detector-model-swap`; `master` is a clean checkpoint.
+2. **Finish the goblin_hut investigation** using the lead above — it is the last known
+   correctness bug in opponent play detection.
+3. **Calibrate `config/tv_royale_regions.py`** — a live session with Duncan, and the real
+   gate on everything below it. This is the only step that needs him rather than the model.
+4. **Fine-tune from KataCR's checkpoints** on our own captures + their MIT sprite set,
+   adding the post-2024 cards neither model has.
+5. **Then retire the compensation layers** listed above.
 
 Still open regardless of direction:
 - Fill in `card_reference.json`'s `movement_speed` (not blocking; replaces the tracker's

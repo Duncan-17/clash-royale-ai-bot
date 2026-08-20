@@ -269,7 +269,7 @@ def read_tower(screenshot: np.ndarray, tower_name: str):
     return _hp_fraction_from_row(region[row_idx], key)
 
 
-DESTROYED_CONFIRM_FRAMES = 60  # a tower must show NO clean bar-color signal for this many
+DESTROYED_CONFIRM_FRAMES = 15  # a tower must show NO clean bar-color signal for this many
 # CONSECUTIVE read_tower() calls before TowerStateTracker actually reports it destroyed --
 # same "debounce a noisy per-frame signal before trusting it" pattern used throughout this
 # project (unit_tracker.py's SIDE_LOCK_HITS/CLASS_LOCK_HITS, cycle_tracker.py's
@@ -297,6 +297,15 @@ DESTROYED_CONFIRM_FRAMES = 60  # a tower must show NO clean bar-color signal for
 # promptly. Not empirically tuned against a large sample of real transients yet -- if a
 # false positive is ever seen again, that's real data to retune this against, not a reason
 # to guess again blindly.
+#
+# LOWERED 60 -> 15 on 2026-08-20, per Duncan after a full live game: "this system takes way
+# too long to flag a tower as destroyed. It's accurate enough at reading the health that you
+# should flag it in roughly 1/4 the time." 60 was chosen defensively when the HP reading
+# itself was still unreliable (all three princess EMPTY_BGR values were wrong at the time, so
+# a tower could read 0%/unreadable while perfectly alive, and a false 'destroyed' is
+# PERMANENT). Those calibration bugs are now fixed and verified against real damaged
+# captures, so the input this debounce guards is far more trustworthy than when it was set --
+# the defensive margin can come down accordingly.
 
 HP_CONFIRM_FRAMES = 2  # mirrors SIDE_LOCK_HITS/CLASS_LOCK_HITS -- a NEW hp_fraction reading
 # must be confirmed by this many consecutive raw reads landing within HP_AGREEMENT_TOLERANCE
