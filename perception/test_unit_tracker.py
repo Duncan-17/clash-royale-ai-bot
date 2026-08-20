@@ -365,6 +365,37 @@ def test_tower_state_makes_a_neutral_pocket_unknown_instead_of_a_hard_guess():
     print("test 16 OK: tower_state correctly turns a deterministic-while-alive position into 'unknown' once that tower is confirmed destroyed")
 
 
+def test_conflicting_side_frame_does_not_split_an_established_track():
+    """The real bug Duncan hit (traced in logs/debug_live_20260820_013026.jsonl):
+    an ally Giant tracked cleanly for 134 consecutive frames, then on the VERY
+    NEXT frame -- zero missed frames, only 22px of movement -- stopped being
+    tracked and a new track_id appeared instead. Cause: side was a hard MATCHING
+    gate, so one conflicting side reading made the real detection fail to match
+    anything and spawn a fresh track. Downstream that reads as a brand-new unit,
+    which is how phantom "played" events get manufactured.
+
+    Side is an ATTRIBUTE; it must not decide IDENTITY (this project's own fusion-
+    architecture doc says identity resolves first). It's now a soft ranking
+    penalty instead, so the track survives and the debounce owns the side."""
+    tracker = UnitTracker()
+    bbox = _bbox_at(300, 900)
+    # Establish a confident ally track (badge-tier, well past the debounce).
+    for _ in range(6):
+        result = tracker.update([_det(name="giant", side="ally", bbox=bbox)])
+    track_id = result[0]["track_id"]
+    assert result[0]["side"] == "ally"
+
+    # One conflicting frame, essentially the same position (22px, like the real log).
+    result = tracker.update([_det(name="giant", side="enemy", bbox=_bbox_at(322, 900))])
+    assert result, "the detection vanished entirely instead of matching"
+    assert result[0]["track_id"] == track_id, (
+        f"a single conflicting side frame split the track "
+        f"({track_id} -> {result[0]['track_id']}) -- this is the phantom-unit bug"
+    )
+    assert result[0]["side"] == "ally", "one conflicting frame should not flip a confirmed side"
+    print("test 17 OK: one conflicting side frame keeps the same track_id (no phantom split) and does not flip the side")
+
+
 def test_no_screenshot_falls_through_to_badge_debounce():
     """screenshot=None (the default, e.g. an existing caller that hasn't
     been updated) must not error, and must fall straight through to the
@@ -395,5 +426,6 @@ if __name__ == "__main__":
     test_building_targeter_reacquires_far_along_its_own_heading()
     test_building_targeter_does_not_reacquire_sideways_of_its_heading()
     test_non_building_unit_reacquires_sideways_via_the_wide_fallback()
+    test_conflicting_side_frame_does_not_split_an_established_track()
     test_no_screenshot_falls_through_to_badge_debounce()
     print("\nALL TESTS PASSED")

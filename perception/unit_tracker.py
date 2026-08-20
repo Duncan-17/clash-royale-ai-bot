@@ -197,6 +197,27 @@ RECENT_VANISH_MAX_DISTANCE_PX = 250  # how far a reappearing unit could plausibl
 # MATCH_DISTANCE_PX=90 (that bounds a SINGLE missed frame; this bridges potentially dozens of
 # them) -- a rough first-pass guess, not derived from any specific unit's real walk speed.
 
+SIDE_MISMATCH_PENALTY_PX = 55  # added to a candidate's match distance when the detection's
+# side disagrees with the track's committed side -- a PREFERENCE, not a veto.
+#
+# Replaces a hard exclusion (2026-08-20 review). The old behaviour let a single bad side
+# reading destroy a track's IDENTITY: a detection whose side conflicted was refused
+# outright, so the real unit failed to match anything and spawned a brand-new track_id.
+# Duncan hit exactly this -- an ally Giant tracked cleanly for 134 consecutive frames,
+# then on the very next frame (zero missed frames, 22px of movement, nowhere near far
+# enough to implicate reacquisition) split into a new track. Downstream that reads as a
+# fresh unit appearing, which is precisely what produces phantom "played" events in
+# game_knowledge/opponent_play_tracker.py.
+#
+# It also contradicted this project's own fusion-architecture principle that IDENTITY is
+# resolved before, and independently of, ATTRIBUTES: side is an attribute, so letting it
+# gate matching inverted the intended order. Class was already corrected this way (see the
+# CLASS accumulator work); side was the remaining offender.
+#
+# A penalty keeps the useful part -- when two candidate tracks are otherwise comparable,
+# the side-agreeing one still wins -- while guaranteeing a real unit always matches
+# SOMETHING rather than fragmenting. Sized larger than typical per-frame jitter but well
+# under MATCH_DISTANCE_PX, so it reorders candidates without excluding a lone one.
 CLASS_LOCK_HITS = 2  # mirrors SIDE_LOCK_HITS -- see _resolve_class's docstring. A track's
 # reported class only changes to a NEW value after this many consecutive matched frames
 # agree on it; a single misclassified frame doesn't relabel the track (and, paired with
@@ -272,9 +293,7 @@ def _side_compatible(track: dict, det_side: str) -> bool:
     one disagreeing frame; it can only fail to match and start a separate
     track, same as the original behavior."""
     track_side = track["side"]
-    if track_side == "unknown" or det_side == "unknown" or track_side == det_side:
-        return True
-    return track["side_tier"] < TIER_BADGE
+    return track_side == "unknown" or det_side == "unknown" or track_side == det_side
 
 
 def _side_from_position(bbox, tower_state=None) -> str:
@@ -645,14 +664,19 @@ class UnitTracker:
         for i, det in enumerate(detections):
             det_center = _center(det["bbox"])
             for track_id, track in self._tracks.items():
-                if not _side_compatible(track, det["side"]):
-                    continue
-                # NOTE: no class-equality gate here on purpose -- see module docstring's
-                # "CLASS accumulator" section. Matching is gated by side-compatibility and
-                # the search area alone; _resolve_class decides the reported class below.
+                # NOTE: neither class NOR side is a hard gate here, on purpose -- see the
+                # module docstring's "CLASS accumulator" and "Identity before attributes"
+                # sections. Matching is decided by the search area alone; _resolve_class
+                # and _resolve_side own the reported class/side.
                 if not _search_radius_ok(det_center, track, self.match_distance_px):
                     continue
                 dist = _distance(det_center, _predicted_center(track))
+                # Side disagreement is a soft PENALTY, not an exclusion: given two
+                # otherwise-comparable candidate tracks, prefer the one whose side
+                # already agrees -- but never refuse the match outright. See
+                # SIDE_MISMATCH_PENALTY_PX for why exclusion was actively harmful.
+                if not _side_compatible(track, det["side"]):
+                    dist += SIDE_MISMATCH_PENALTY_PX
                 candidates.append((dist, i, track_id))
 
         candidates.sort(key=lambda c: c[0])
