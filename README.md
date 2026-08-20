@@ -24,6 +24,22 @@ screenshot capture and tap/drag control against LDPlayer, no AI yet.
    ```
    pip install -r requirements.txt
    ```
+   If you have an NVIDIA GPU, install the CUDA torch build FIRST — the default
+   CPU build runs the newer detector ~23x slower (~2fps, unusable live). For an
+   RTX 50-series (Blackwell):
+   ```
+   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+   ```
+
+4. **(Optional) Fetch the experimental detector weights.** `perception/katacr_detector.py`
+   can run KataCR's YOLOv8 detectors instead of the bundled `units.onnx` — more
+   accurate, and the weights are trainable (see `Project_Status`). They're not
+   committed (88MB each); download links are in that module's docstring, and it
+   also needs the KataCR source for its model class:
+   ```
+   git clone --depth 1 https://github.com/wty-yy/KataCR.git vendor/katacr
+   ```
+   Then: `python -m perception.debug_live --detector katacr`
 
 ## Verify everything works
 
@@ -40,13 +56,33 @@ unit detection) on top of it.
 
 ```
 control/
-    actions.py      — EmulatorController: tap(), swipe()
+    actions.py            — EmulatorController: tap(), swipe()
 perception/
-    capture.py       — ScreenCapture: screenshot(), save()
+    capture.py            — ScreenCapture: screenshot(), save()
+    card_detector.py      — cards in hand (template matching)
+    elixir_counter.py     — elixir number + bar fill
+    unit_detector.py      — board units (bundled units.onnx)
+    katacr_detector.py    — EXPERIMENTAL alternative detector, same interface
+    unit_tracker.py       — persistent track IDs, side/class resolution
+    tower_reader.py       — tower HP % and destroyed state
+    side_reader.py        — ally/enemy from the level badge colour
+    spawn_icon_reader.py  — side at the moment of placement
+    debug_live.py         — the live debug view (start here)
+game_knowledge/
+    cycle_tracker.py      — our own card cycle
+    opponent_play_tracker.py — what the opponent played, and when
+    zone_classifier.py    — per-lane ally/enemy/neutral zones
 config/
-    settings.py       — ADB host/port, LDPlayer install path
-vendor/               — clone reference repos here for study (see roadmap §3)
-test_connection.py    — run this first
+    settings.py           — ADB host/port, LDPlayer install path
+    red_zones.py          — tower/water/arena-bounds geometry
+vendor/                   — reference repos, gitignored (see roadmap §3)
+test_connection.py        — run this first
+```
+
+Most day-to-day work happens through the live debug view:
+```
+python -m perception.debug_live               # current detector
+python -m perception.debug_live --detector katacr   # experimental
 ```
 
 ## Reference repos (clone into vendor/ when you want to study them)

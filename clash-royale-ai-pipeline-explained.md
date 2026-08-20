@@ -151,6 +151,51 @@ The interesting technical wrinkle: unlike a badge's digit (a constant shape, wit
 
 ---
 
+## 5d. Replacing the detector itself (2026-08-20) — the current direction
+
+Sections 5b/5c describe fixing specific *symptoms* of a weak unit detector by reading the
+game's own UI directly. That worked for what it targeted, but it could never fix the
+underlying problem: the model itself misses units, invents ones that aren't there, and has
+no class at all for whole categories (every spell, every health bar, the deploy clock).
+
+**Why the base model was the ceiling.** `units.onnx` reports its own training date as
+2024-08-31 and covers 97 classes. Anything released after that date is invisible to it, and
+it was never trained to see spells or UI elements at all. No amount of downstream logic can
+recover an object the detector never reports.
+
+**What changed.** KataCR (MIT-licensed, github.com/wty-yy/KataCR) publishes two YOLOv8
+detectors covering 155 classes. Beyond more troops, they natively detect the exact things
+this project hand-built pixel-calibrated modules to find: `tower-bar` and `king-tower-bar`
+(what `tower_reader.py` measures), `bar` and `bar-level` (what `side_reader.py` searches
+for), `clock` (what `spawn_icon_reader.py` searches for), plus 19 spells and `selected` (a
+hand-card-selection signal nothing in the project could previously see). They also emit
+**belonging** — ally vs enemy — as a dedicated output channel rather than a guessed class,
+which is the thing §5b explains a per-crop classifier fundamentally cannot learn.
+
+`perception/katacr_detector.py` wraps them behind the exact same interface as
+`unit_detector.py`, so everything downstream is unchanged. Pick one at runtime:
+`python -m perception.debug_live --detector katacr`.
+
+**The strategically important part is that these weights are trainable.** This doc's §5
+previously explained that closing the model's gaps was hard because build-a-bot ships only
+an inference-only ONNX export — you cannot continue training from it. KataCR ships PyTorch
+checkpoints, and their dataset (~4,654 pre-cut unit sprites plus the generator that
+composites them onto arena backgrounds) is MIT. So the plan is no longer to build a bespoke
+labelling pipeline from scratch, but to **fine-tune an existing model on our own footage** —
+which is also why §5's TV Royale pipeline is revived rather than abandoned: it is a data
+source for that training, not a replacement for it.
+
+A correction worth stating plainly, since §5 was written around it: getting labelled data is
+not the near-impossible part it was assumed to be. The standard approach in this domain is
+*synthetic composition* — segment each unit sprite once, paste it onto backgrounds at known
+positions, and every bounding-box label is exact and free.
+
+---
+
 ## 6. Current status
 
-This doc explains *how things work*, not *what's done right now* — that's `Project_Status`'s job, and it's kept current there. As of this doc's writing: capture/control (Phase 1) and game data (Phase 2) are done; card-in-hand detection, elixir counting, and unit/tower detection with tracking (Phase 3) are all done and validated live; reading team color directly (section 5b) and the spawn-icon system (section 5c) are both done and live-verified; Phase 4 (algorithmic game-knowledge — own-side card cycle tracking is done; opponent-side play detection has had many rounds of live-tested fixes and is close but not fully clean, see `Project_Status`'s "Next up") is in progress; the TV Royale auto-labeling pipeline (section 5) is built but paused, looking decreasingly likely to be needed now that 5b/5c have closed most of the gap it was meant to address.
+This doc explains *how things work*, not *what's done right now* — that's `Project_Status`'s job, and it's kept current there.
+
+As of 2026-08-20: capture/control (Phase 1) and game data (Phase 2) are done. Phase 3 perception — cards, elixir, units, tower HP/destroyed state, ally/enemy reading, spawn-icon reading — is all built and live-verified. Phase 4 has own-side cycle tracking done and verified, opponent play detection working but not fully clean, and per-lane zone classification built on top of the tower reader.
+
+The active direction is §5d: replacing the base detector with a trainable open-weight model, then fine-tuning it on our own footage via the revived §5 TV Royale pipeline. Several of the modules described above (§5b's `side_reader.py`, §5c's `spawn_icon_reader.py`) exist to compensate for the old detector's blind spots and are expected to retire once that swap is confirmed — they're documented here because understanding *why* they were built explains what the replacement has to keep doing.

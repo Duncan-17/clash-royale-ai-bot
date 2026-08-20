@@ -1,16 +1,30 @@
-# Phase 1 (control + capture plumbing) + Phase 2 (game data) — install with:
+# Install with:
 #   pip install -r requirements.txt
 #
-# The full ML/RL stack from the roadmap (torch, stable-baselines3, ultralytics,
-# etc.) isn't needed until later phases — add it when you get there so this
-# install stays fast for now.
+# NOTE on torch (2026-08-20): the line below installs the DEFAULT (CPU) build,
+# which is enough to load and run the detector but was measured at ~457ms/frame
+# (~2fps) and is unusable for live debugging. For a CUDA GPU install the matching
+# build FIRST, then this file, e.g. for an RTX 50-series (Blackwell, needs cu128):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+# On the same machine that took KataCR inference from 457ms to ~20ms/frame.
 
+# --- Phase 1 (control + capture) + Phase 2 (game data) ---
 pure-python-adb
 opencv-python
 numpy
-Pillow
 requests
 python-dotenv
 PyYAML
 adbnativeblitz
-onnxruntime
+
+# --- Phase 3 (perception) ---
+onnxruntime          # runs the legacy build-a-bot units.onnx detector
+torch                # see the CUDA note above
+torchvision          # torchvision.ops.nms, used by perception/katacr_detector.py
+ultralytics          # loads KataCR's YOLOv8 checkpoints
+
+# Removed 2026-08-20: Pillow. It was only ever used by the pre-adbnativeblitz
+# screenshot decode path in perception/capture.py, which no longer exists.
+# Confirmed unused by search -- the only remaining "PIL" mentions in the codebase
+# are comments explaining a historical RGB/BGR channel-order bug. Flagged as a
+# cleanup candidate in Project_Status since 2026-08-15.

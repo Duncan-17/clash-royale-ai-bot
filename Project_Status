@@ -601,16 +601,91 @@ Both fixed with 2 new dedicated tests reproducing the exact real patterns (a lon
 1. **Enemy princess towers still read instant 0% on any damage** — confirmed the exact same root cause as the ally fix above: princess-*enemy*'s `EMPTY_BGR` (BGR~29,2,107) was ALSO measured from a border/bezel row, not a real empty-fill transition — directly confirmed by comparing it against a fresh 100%-health capture's own border row (BGR~29-34,2-4,114-118, nearly identical) that couldn't possibly be real "empty" color on a tower showing zero transition across its full width. **Not fixed yet** — needs a real capture of an enemy princess tower actually damaged (not just full-health) to measure the true transition point, same process as the ally fix. Asked Duncan for one.
 2. **Ally towers "flash zero then correct" on every hit, feels slow to update** — a real, different bug from the single-frame-flash bug fixed earlier: traced in the log to a clean, repeating pattern (`ally_left` declining 0.734→0.619→0.543→[0.0,0.0]→0.433→[0.0,0.0]→0.358→...) — a 2-CONSECUTIVE-frame false-zero flash around every single hit, long enough to satisfy the existing `HP_CONFIRM_FRAMES=2` debounce and get "confirmed" just as easily as a real reading. Fixed with a stricter, TARGETED debounce specifically for "sudden drop to near-zero from a meaningfully healthy prior value" (`HP_ZERO_DROP_CONFIRM_FRAMES=5`, gated by `HP_ZERO_DROP_MIN_PRIOR=0.15`/`HP_ZERO_DROP_THRESHOLD=0.05`) — an ordinary gradual change still only needs the normal 2-frame window, so this doesn't slow down legitimate tracking, only the specific implausible-full-drop pattern. New test reproducing the exact real sequence — `perception/test_tower_reader.py` is 10 tests now, all passing.
 
-Everything else, roughly in priority order:
-- **Get a real capture of an enemy princess tower mid-damage** — needed to fix finding 1 above the same way the ally EMPTY_BGR was fixed; still guessing/blocked without it.
-- **Live-test the princess-tower HP fixes** — real-data-driven and validated against available captures, but not yet re-confirmed against fresh live play end-to-end.
-- **Live-test again** — the tower-reader fixes from the round before this, plus the still-unverified unit-tracker upgrade (class accumulator + velocity reacquisition) and zone-classification wiring from the round before that.
-- Consider a real fix for `_side_compatible`'s "single conflicting frame can't be recovered through the same track_id" gap (see the round-before-last's finding 3) — likely belongs in the broader tracking-system redesign rather than another isolated patch.
-- Validate `perception/spawn_icon_reader.py`'s search-window design against the three still-untested position cases (short troop/center, flying/shadow, swarm/lead-unit) — only the tall-troop/feet case has real confirmed data. Also: investigate the top/bottom-board-edge misses and the double-elixir-banner interference.
-- Re-run `game_knowledge/compare_ground_truth.py` against a fresh match now that `side.onnx` is gone entirely and the tracker's been upgraded, to measure how much noise both changes together removed.
-- Spot-check `perception/unit_metadata.py`'s `TARGET_TYPE` / `card_reference.json`'s `target_type` column against real game knowledge — only Giant was corrected so far, not an exhaustive audit.
-- Fill in `card_reference.json`'s `movement_speed` field (Duncan, whenever — not blocking) to replace the tracker's current one-size-fits-all search-radius constants with real per-card values.
-- The TV Royale pipeline (perception/frame_diff.py, data/auto_labeler.py, data/tv_royale_watcher.py) is built, tested, and deliberately PAUSED — decreasingly likely to be needed at all, not formally decided either way.
-- Opponent deck/hand/elixir modeling is the step after the opponent-play-detection gaps above are re-assessed.
-- Housekeeping, still open from earlier sessions, more urgent now given how much has been added: remove unused Pillow from requirements.txt; **a git commit checkpoint is genuinely overdue** — a very large amount of work across this whole project exists only on disk, never committed; confirm the United Clash API key was actually rotated (see Phase 2 above).
-- Own-side cycle tracking, elixir counting, and live unit/tower detection are all done and stable — no dedicated effort needed there, coverage keeps improving naturally from ordinary play.
+=== DIRECTION CHANGE (2026-08-20): custom-trained detector is now the main line ===
+
+After a live test of the KataCR detector, Duncan's call: **"continuing to train this
+open-weight YOLO model on TV Royale games is definitely the way to go in the future."**
+This supersedes the incremental heuristic-patching approach that produced most of the
+"Next up" list below it. Everything in this section is the new plan of record.
+
+Why the direction changed — the evidence, not just a preference:
+- Our units.onnx self-reports `date: 2024-08-31`, YOLOv10m @ 480x352, 97 classes, and has
+  NO classes at all for spells, health bars, level badges, or the deploy clock.
+- KataCR (github.com/wty-yy/KataCR, MIT, 459*) ships two YOLOv8l @ 896 detectors covering
+  155 classes, INCLUDING native classes for things this project hand-built entire
+  pixel-calibrated modules for: `tower-bar`/`king-tower-bar` (tower_reader.py),
+  `bar`/`bar-level` (side_reader.py), `clock` (spawn_icon_reader.py), `selected` (the
+  hand-selection signal we'd previously confirmed nothing could see), and 19 spells (the
+  entire never-built Tier 1/2/3 spell module).
+- Live-tested by Duncan: "working much much better outside of the units it struggles
+  with… it was even detecting enemy fireballs well."
+- Measured: KataCR on GPU fp16 is ~20ms/frame vs units.onnx at ~32ms on CPU — more
+  accurate AND faster.
+
+**The decisive difference is that these weights are trainable.** Project_Status previously
+named this the exact blocker: "build-a-bot only ships the exported ONNX (inference-only) —
+no original trainable PyTorch checkpoint, no dataset, no training pipeline." All three now
+exist: KataCR's `.pt` checkpoints carry real nn.Module weights (fine-tunable; the absent
+optimizer state only prevents RESUMING a run, not fine-tuning), and their
+Clash-Royale-Detection-Dataset is MIT with ~4,654 pre-cut unit sprites across 154 classes
+PLUS the generator that composites them onto arena backgrounds.
+
+That last point corrects a real earlier misjudgement recorded in this doc: the TV Royale
+pipeline was designed around "a bounding-box annotation workflow doesn't exist yet" being
+the hard blocker. The domain-standard solution is synthetic composition — cut each sprite
+out once, paste onto backgrounds at known positions, and the labels are free and perfect.
+That is how comparable projects get good results in days rather than months.
+
+Known remaining detector gaps, all expected to be fixed BY training rather than around it:
+- Misses our own archers and sometimes mini-pekka. Confirmed genuine recall failure: still
+  absent at conf 0.15, not an NMS artifact, and unchanged by fixing a real preprocessing
+  distortion (our arena crop stretches units 14.3% vertically vs 1.3% for their own
+  training crop — worth fixing regardless, but it wasn't the cause).
+- The right BRIDGE is detected as `goblin_cage`, stationary at (626,613,737,735) ±2px at
+  0.80-0.90 confidence, every frame. Deliberately NOT patched with an exclusion zone —
+  that would block real troops crossing the bridge, and heuristic-patching around model
+  errors is the treadmill this direction change exists to get off.
+- Checkpoints are dated 2024-04/05, ~4 months OLDER than the model they replace, so
+  post-cutoff cards are if anything slightly worse. Retraining is the only fix.
+
+TV Royale pipeline status: **REVIVED, no longer paused.** `perception/frame_diff.py`,
+`data/auto_labeler.py` and `data/tv_royale_watcher.py` are built and unit-tested and are
+now the intended data source. Still needs `config/tv_royale_regions.py` (a live calibration
+session) and the TV Royale menu-navigation taps. Note the earlier decision to keep side OUT
+of the class taxonomy still stands and is now independently corroborated: KataCR encodes
+belonging as a separate output channel, not a class suffix.
+
+**Compensation layers to retire once the swap is confirmed.** These exist specifically to
+paper over the old detector's weaknesses and should be deleted, not carried forward:
+- `PLAY_PERSISTENCE_MIN_AGE` (opponent_play_tracker) — guards against phantom short-lived
+  tracks the new model doesn't produce. Already demoted to a secondary path behind a
+  visibility check.
+- `BURST_MIN_FRACTION` / `_burst_min_count` — exists because goblins were never all
+  detected at once. The new model detects them at 0.74-0.88.
+- The ally-vanish / concurrent-duplicate / own-play-collision heuristics — all built to
+  correct side.onnx-era misclassification. The new model supplies belonging directly.
+- `perception/side_reader.py` and `perception/spawn_icon_reader.py` — their entire job is
+  finding bars/badges/clocks by colour search, which the model now does as native classes.
+  Keep while the onnx path is still selectable; retire with it.
+
+The hybrid worth building either way: the model gives a bar's BOUNDING BOX, not its fill %.
+Best architecture is model-localizes -> existing pixel logic reads the fill inside. That
+deletes every hardcoded tower coordinate, which is what caused all three EMPTY_BGR bugs
+this session.
+
+Immediate next steps, in order:
+1. Live-test the current branch end-to-end and decide whether to make KataCR the default.
+2. Calibrate `config/tv_royale_regions.py` and get the auto-labeller running.
+3. Fine-tune from KataCR's checkpoints on our own captures + their MIT sprite set, adding
+   the post-2024 cards neither model has.
+4. Then retire the compensation layers listed above.
+
+Still open regardless of direction:
+- Fill in `card_reference.json`'s `movement_speed` (not blocking; replaces the tracker's
+  one-size-fits-all reacquisition radius with real per-card values).
+- Spot-check `unit_metadata.TARGET_TYPE` / `card_reference.json`'s `target_type` — only
+  Giant was corrected, not an exhaustive audit.
+- Re-run `game_knowledge/compare_ground_truth.py` against a fresh match to measure the
+  detector swap quantitatively rather than by impression.
+- Confirm the United Clash API key was actually rotated (see Phase 2 above).
+- Own-side cycle tracking, elixir counting and tower reading are done and stable.

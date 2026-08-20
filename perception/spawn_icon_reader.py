@@ -76,10 +76,6 @@ from perception.side_reader import _blue_mask, _red_mask
 
 TEMPLATE_DIR = "assets/spawn_icon_templates"
 MATCH_SIZE = (48, 48)  # real icon size measured so far: ~35-45px per side
-MATCH_THRESHOLD = 0.5  # first-pass, NOT tuned against real data yet -- only
-# two bootstrap templates (one per side) exist so far. Loosened relative to
-# side_reader.py's LEVEL_MATCH_THRESHOLD=0.65 for the same reason that one
-# started loose: nothing to tune against until more real examples exist.
 
 GOLD_RING_MIN_R = 180
 GOLD_RING_MIN_G = 140
