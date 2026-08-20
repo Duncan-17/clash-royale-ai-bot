@@ -121,13 +121,20 @@ class KataCRDetector:
     side.onnx with the algorithmic perception/side_reader.py)."""
 
     def __init__(self, model_paths=None, conf=DEFAULT_CONF, iou=DEFAULT_IOU,
-                 include_non_units=True):
+                 include_non_units=True, device=None, half=None):
         import torch  # imported lazily -- torch is only needed for this experimental path
         from ultralytics import YOLO
         self._torch = torch
         self.conf = conf
         self.iou = iou
         self.include_non_units = include_non_units
+        # These are YOLOv8l at 576x896 -- roughly 12x the compute of the YOLOv10m@480x352
+        # this replaces, so CPU inference measured ~457ms/frame (~2fps) and was reported
+        # unwatchable in the live debug view. GPU is effectively required for live use.
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        # fp16 roughly halves GPU inference time at no meaningful accuracy cost for
+        # detection; never used on CPU, where fp16 is typically SLOWER (no native support).
+        self.half = (self.device != "cpu") if half is None else half
         paths = model_paths or DEFAULT_MODELS
         missing = [p for p in paths if not os.path.isfile(p)]
         if missing:
@@ -138,7 +145,8 @@ class KataCRDetector:
         self._models = []
         for p in paths:
             y = YOLO(p)
-            m = y.model.float().eval()
+            m = y.model.to(self.device).eval()
+            m = m.half() if self.half else m.float()
             self._models.append((m, y.names))
 
     def _raw_boxes(self, model, names, tensor):
@@ -182,7 +190,9 @@ class KataCRDetector:
 
         rgb = cv2.cvtColor(arena, cv2.COLOR_BGR2RGB)
         resized = cv2.resize(rgb, (NET_W, NET_H), interpolation=cv2.INTER_LINEAR)
-        tensor = torch.from_numpy(resized).permute(2, 0, 1).float().div(255).unsqueeze(0)
+        tensor = torch.from_numpy(resized).permute(2, 0, 1).unsqueeze(0)
+        tensor = tensor.to(self.device)
+        tensor = (tensor.half() if self.half else tensor.float()).div(255)
 
         parts = []
         for model, names in self._models:

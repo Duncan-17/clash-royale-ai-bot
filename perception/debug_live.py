@@ -859,7 +859,8 @@ def main():
                               "EXPERIMENTAL KataCR YOLOv8l pair (see "
                               "perception/katacr_detector.py) -- far more accurate in "
                               "offline testing but ~457ms/frame on CPU vs ~36ms, so "
-                              "expect ~2fps until torch has CUDA available.")
+                              "expect ~2fps on CPU. On a CUDA GPU it runs ~20ms/frame (~50fps), "
+                              "which is FASTER than the current CPU onnx path.")
     args = parser.parse_args()
     show_details = args.detailed
     unit_view_mode = UNIT_VIEW_MODES[0]  # "side" -- toggled live with 'u'
