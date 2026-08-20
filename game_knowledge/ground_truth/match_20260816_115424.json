@@ -1,0 +1,17 @@
+{
+    "log_file": "logs/debug_live_20260816_115424.jsonl",
+    "own_deck": ["archers", "arrows", "fireball", "giant", "knight", "minions", "mini_pekka", "musketeer"],
+    "notes": "Online ranked match, second-by-second ground truth dictated by Duncan while reviewing footage after the fact (2026-08-16) -- the first ground truth with exact per-second timestamps for both sides, not just an impression-level list. Timestamps are seconds into the match, eyeballed while watching, not read from frame data -- treat as approximate (a few seconds of slack), not frame-exact. Card names below are slugs matching config/deck.txt's convention, not perception/unit_detector.py's class names -- see game_knowledge/compare_ground_truth.py for the slug -> (unit_class, count) mapping used when checking this against a replay.",
+    "events": [
+        {"t": 13, "side": "own", "card": "archers", "position": "split, behind own king tower"},
+        {"t": 15, "side": "opponent", "card": "knight", "position": "in front of opponent's own left princess tower"},
+        {"t": 22, "side": "own", "card": "knight", "position": "middle of own side"},
+        {"t": 26, "side": "opponent", "card": "giant", "position": "left bridge"},
+        {"t": 30, "side": "own", "card": "mini_pekka", "position": "left bridge, in front of opponent's giant"},
+        {"t": 34, "side": "own", "card": "giant", "position": "left bridge"},
+        {"t": 34, "side": "opponent", "card": "minions", "position": "slightly behind the edge of the left bridge, on top of Duncan's own archer"},
+        {"t": 34, "side": "own", "card": "musketeer", "position": "leftmost corner of the opponent's side",
+         "note": "after taking a princess tower, that zone becomes placeable by BOTH sides -- not exclusively the tower's original owner anymore"},
+        {"t": 54, "side": "opponent", "card": "archers", "position": "left of the opponent's own king tower, inside a cluster of Duncan's own units"}
+    ]
+}

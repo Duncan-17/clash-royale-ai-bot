@@ -69,8 +69,10 @@ def main():
         rows.append(row)
 
     montage = np.vstack(rows)
-    cv2.imwrite("debug_hand_match.png", montage)
-    print("Saved debug_hand_match.png — left = actual hand slot crop, right = matched example.")
+    os.makedirs("temp_img", exist_ok=True)
+    out_path = os.path.join("temp_img", "debug_hand_match.png")
+    cv2.imwrite(out_path, montage)
+    print(f"Saved {out_path} — left = actual hand slot crop, right = matched example.")
 
 
 if __name__ == "__main__":

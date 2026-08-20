@@ -3,7 +3,6 @@ vendor/
 __pycache__/
 *.pyc
 test_screenshot.png
-debug_hand_match.png
-debug_unit_detections.png
-scratch_*
+temp_img/
 logs/
+data/unit_training/

@@ -16,19 +16,22 @@ for the precise gap analysis (most of the "missing" 25 are spells, which
 were never in scope for a troop/building detector; the real gap is 5
 troops from 2025 releases, deliberately not solved yet).
 
-Two models, both copied into assets/models/:
-- units.onnx — the actual troop/building detector. Input: one video
-  frame. Output: up to 300 candidate detections, each
-  [left, top, right, bottom, confidence, class_id] in the model's own
-  480x352 letterboxed coordinate space. YOLOv10 is NMS-free (its export
-  metadata confirms this), so no separate de-duplication pass is needed
-  on top of the confidence filter.
-- side.onnx — a tiny separate classifier (16x16 input) that labels a
-  single detected unit's crop as "ally" or "enemy". Run per-detection
-  here rather than build-a-bot's shortcut of skipping it for units that
-  couldn't possibly be ours based on deck contents — we don't have a
-  deck->unit mapping yet, and the model is cheap enough that running it
-  unconditionally isn't worth the complexity of avoiding.
+units.onnx (assets/models/units.onnx) is the actual troop/building
+detector. Input: one video frame. Output: up to 300 candidate detections,
+each [left, top, right, bottom, confidence, class_id] in the model's own
+480x352 letterboxed coordinate space. YOLOv10 is NMS-free (its export
+metadata confirms this), so no separate de-duplication pass is needed on
+top of the confidence filter.
+
+Side (ally/enemy) classification used to be a second model, side.onnx —
+removed 2026-08-16 in favor of perception/side_reader.py, which reads the
+game's own color-coded level badge/health bar directly instead of a
+per-crop classifier (which had no reliable per-side visual signal to
+learn from at all — Clash Royale doesn't skin-tint troops by side; see
+side_reader.py's module docstring and Project_Status's "Side (ally/enemy)
+determination" section for the full history of why side.onnx was
+unreliable in live testing). See detect()'s own docstring for how the
+"unknown" case (no color signal this frame) is handled.
 
 Preprocessing ported from build-a-bot's onnx_detector.py/unit_detector.py
 (resize preserving aspect ratio, then pad to the model's fixed input size
@@ -62,15 +65,17 @@ bbox), and saves debug_unit_detections.png with boxes drawn — open it to
 confirm detections visually before trusting this.
 """
 
+import os
+
 import cv2
 import numpy as np
 import onnxruntime as ort
 
 from config.red_zones import in_tower_detection_exclusion, in_water_zone
+from perception import side_reader
 from perception.unit_metadata import is_air
 
 MODEL_PATH = "assets/models/units.onnx"
-SIDE_MODEL_PATH = "assets/models/side.onnx"
 
 UNIT_Y_START = 0.05
 UNIT_Y_END = 0.80
@@ -191,25 +196,27 @@ class OnnxDetector:
         return self.session.run([self.output_name], {self.input_name: model_input})[0]
 
 
-class SideDetector(OnnxDetector):
-    """Classifies a single detected unit's crop as 'ally' or 'enemy'."""
-
-    def run(self, bgr_crop: np.ndarray) -> str:
-        rgb = cv2.cvtColor(bgr_crop, cv2.COLOR_BGR2RGB)
-        resized = cv2.resize(rgb, (16, 16), interpolation=cv2.INTER_CUBIC)
-        model_input = np.expand_dims(resized.astype(np.float32) / 255.0, axis=0)
-        pred = self.session.run([self.output_name], {self.input_name: model_input})[0]
-        return ("ally", "enemy")[int(np.argmax(pred[0]))]
-
-
 class UnitDetector(OnnxDetector):
-    def __init__(self, model_path=MODEL_PATH, side_model_path=SIDE_MODEL_PATH):
+    def __init__(self, model_path=MODEL_PATH):
         super().__init__(model_path)
-        self.side_detector = SideDetector(side_model_path)
 
     def detect(self, screenshot: np.ndarray) -> list:
-        """Returns a list of dicts: name, confidence, side ('ally'/'enemy'),
-        bbox (x1, y1, x2, y2) in the ORIGINAL screenshot's pixel coordinates."""
+        """Returns a list of dicts: name, confidence, side ('ally'/'enemy'/
+        'unknown'), bbox (x1, y1, x2, y2) in the ORIGINAL screenshot's
+        pixel coordinates.
+
+        side.onnx's per-crop classifier was removed 2026-08-16 in favor of
+        perception/side_reader.py, which reads the game's own color-coded
+        level badge/health bar directly instead of guessing from an
+        isolated sprite crop (which has no reliable per-side visual
+        signal at all — see side_reader.py's module docstring and
+        Project_Status's "Side (ally/enemy) determination" section for the
+        full history of why side.onnx was unreliable). "unknown" means no
+        color signal was found this frame — most commonly a fresh,
+        undamaged ally troop (the game itself doesn't show one), or an
+        occluded/mid-deploy-animation unit. perception/unit_tracker.py is
+        responsible for persisting a track's last KNOWN side across
+        "unknown" frames rather than this module trying to guess."""
         full_height, full_width = screenshot.shape[:2]
         y1 = int(UNIT_Y_START * full_height)
         y2 = int(UNIT_Y_END * full_height)
@@ -240,8 +247,7 @@ class UnitDetector(OnnxDetector):
             name = CLASS_NAMES[int(cls)]
             if _should_suppress(name, bbox):
                 continue
-            crop = screenshot[bbox[1]:bbox[3], bbox[0]:bbox[2]]
-            side = self.side_detector.run(crop) if crop.size > 0 else "unknown"
+            side = side_reader.detect_side(screenshot, bbox) or "unknown"
             detections.append({
                 "name": name,
                 "confidence": float(conf),
@@ -263,11 +269,13 @@ if __name__ == "__main__":
     display = screenshot.copy()
     for d in detections:
         print(f"  {d['name']:16s} {d['side']:6s} conf={d['confidence']:.2f} bbox={d['bbox']}")
-        color = (0, 200, 0) if d["side"] == "ally" else (0, 0, 255)
+        color = {"ally": (255, 80, 0), "enemy": (0, 0, 255)}.get(d["side"], (0, 165, 255))  # blue/red/orange
         x1, y1, x2, y2 = d["bbox"]
         cv2.rectangle(display, (x1, y1), (x2, y2), color, 2)
         cv2.putText(display, f"{d['name']} {d['confidence']:.2f}", (x1, max(15, y1 - 6)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
 
-    cv2.imwrite("debug_unit_detections.png", display)
-    print("\nSaved debug_unit_detections.png — open it to confirm detections visually.")
+    os.makedirs("temp_img", exist_ok=True)
+    out_path = os.path.join("temp_img", "debug_unit_detections.png")
+    cv2.imwrite(out_path, display)
+    print(f"\nSaved {out_path} — open it to confirm detections visually.")
