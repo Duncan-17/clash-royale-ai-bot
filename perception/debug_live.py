@@ -1126,7 +1126,9 @@ def main():
                 # (see perception/bar_reader.py). Lets a wrong side be judged
                 # against WHY it was chosen, not just that it was.
                 src = " ▮" if u.get("side_source") == "bar" else ""
-                unit_label = f"{pretty} · {u['track_id']}{src}"
+                hp = u.get("hp_fraction")
+                hp_txt = f"  {hp * 100:.0f}%" if hp is not None else ""
+                unit_label = f"{pretty} · {u['track_id']}{src}{hp_txt}"
                 if show_details:
                     unit_label += f"  {u['confidence']:.2f}"
                 draw_box(display, u["bbox"], color, unit_label)

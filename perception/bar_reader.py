@@ -40,13 +40,21 @@ correct side to a wrong one. Association is therefore ONE-TO-ONE and greedy by
 best score — one bar can claim only one unit — and anything outside the measured
 geometry is left unassociated rather than forced onto a guess.
 
-NOT built here yet, deliberately: reading HP FILL PERCENTAGE inside the bar. The
-model gives the bar's bounding box, not its fill, so that needs the same
-pixel-fill technique perception/tower_reader.py uses — and, as that module's
-history proves three times over, an EMPTY-colour value guessed from a full-health
-capture is silently wrong. That needs real captures of damaged units first.
-Unit HP is a long-standing planned feature (Project_Status, "Unit HP reading —
-planned 2026-08-15, not started"); this module is the localisation half of it.
+HP FILL reading (added 2026-08-20, once Duncan captured a frame with both an ally
+and an enemy Giant at visibly-not-full health — "mostly full" is exactly the right
+capture for this, since a full bar has no empty section to measure and is precisely
+how tower_reader.py's EMPTY colours were mis-derived three separate times).
+
+Colours were measured from that real capture's own fill→empty transitions, and
+produced a genuinely useful cross-check: they are essentially IDENTICAL to the
+independently-derived tower-bar colours (ally filled 251,204,112 vs tower
+252,207,114; enemy empty 73,48,93 vs tower 73,49,92). The game uses one UI palette
+for both, so this independently validates the tower calibration that was corrected
+separately — two different measurement sessions on two different UI elements
+converging on the same values is much stronger evidence than either alone.
+
+This completes the localisation + measurement halves of the long-planned "Unit HP
+reading" feature (Project_Status, "planned 2026-08-15, not started").
 """
 
 # Measured from real detections, not assumed -- see module docstring. Kept
@@ -58,6 +66,55 @@ MIN_BOTTOM_OFFSET_PX = -20  # bar bottom relative to unit top: negative = bar si
 MAX_BOTTOM_OFFSET_PX = 25   # positive = bar overlaps slightly into the unit box
 
 BAR_CLASSES = ("bar", "bar-level")
+
+# Measured 2026-08-20 from assets/tower_reader_calibration/unit_bars_both_giants.png --
+# a real capture with an ally Giant at ~92% and an enemy Giant at ~84%. See module
+# docstring for why a NOT-full bar is the only capture that can produce a correct EMPTY
+# value, and for the cross-check against tower_reader.py's independently-derived palette.
+UNIT_BAR_FILLED_BGR = {"ally": (251.0, 204.0, 112.0), "enemy": (90.0, 35.0, 219.0)}
+UNIT_BAR_EMPTY_BGR = {"ally": (120.0, 80.0, 62.0), "enemy": (73.0, 48.0, 93.0)}
+BAR_CLEAN_MAX_DIST = 60      # same tolerance tower_reader.py uses, same reasoning
+BAR_MIN_CLEAN_ROW_FRACTION = 0.5
+
+
+def read_bar_fill(screenshot, bar_bbox, side):
+    """Returns the bar's fill fraction 0.0-1.0, or None if no clean bar-coloured
+    row could be found (occlusion, mid-animation, a bad box).
+
+    Same technique as perception/tower_reader.py, and deliberately so: pick the
+    row with the highest fraction of pixels close to EITHER the filled or the
+    empty reference colour, then measure what share of that row's clean pixels
+    are filled. Selecting on "close to one of the two SPECIFIC bar colours"
+    rather than "roughly the right hue" is the exact lesson tower_reader.py
+    learned the hard way -- a looser hue test happily picks a dark border row
+    and reports 0% on a healthy bar."""
+    import numpy as np
+    x1, y1, x2, y2 = bar_bbox
+    region = screenshot[max(0, y1):y2, max(0, x1):x2]
+    if region.size == 0 or side not in UNIT_BAR_FILLED_BGR:
+        return None
+    filled = np.array(UNIT_BAR_FILLED_BGR[side])
+    empty = np.array(UNIT_BAR_EMPTY_BGR[side])
+
+    best_row, best_frac = None, -1.0
+    for i in range(region.shape[0]):
+        row = region[i].astype(np.float32)
+        d_f = np.abs(row - filled).sum(axis=1)
+        d_e = np.abs(row - empty).sum(axis=1)
+        clean = (d_f < BAR_CLEAN_MAX_DIST) | (d_e < BAR_CLEAN_MAX_DIST)
+        frac = float(clean.mean())
+        if frac > best_frac:
+            best_row, best_frac = i, frac
+    if best_frac < BAR_MIN_CLEAN_ROW_FRACTION:
+        return None
+
+    row = region[best_row].astype(np.float32)
+    d_f = np.abs(row - filled).sum(axis=1)
+    d_e = np.abs(row - empty).sum(axis=1)
+    clean = (d_f < BAR_CLEAN_MAX_DIST) | (d_e < BAR_CLEAN_MAX_DIST)
+    if not clean.any():
+        return None
+    return float((d_f[clean] < BAR_CLEAN_MAX_DIST).mean())
 
 
 def _center_x(bbox):
@@ -117,7 +174,7 @@ def _is_non_unit(det: dict) -> bool:
     return det.get("raw_name") in NON_UNIT_CLASSES
 
 
-def apply_bar_sides(detections: list) -> list:
+def apply_bar_sides(detections: list, screenshot=None) -> list:
     """Returns a NEW list of unit detections (bars/UI classes dropped) with each
     unit's `side` replaced by its associated bar's side where one was found, plus
     two extra fields:
@@ -140,8 +197,12 @@ def apply_bar_sides(detections: list) -> list:
         if bar is not None:
             unit["side"] = bar["side"]
             unit["side_source"] = "bar"
+            unit["hp_fraction"] = (read_bar_fill(screenshot, bar["bbox"], bar["side"])
+                                    if screenshot is not None and bar["raw_name"] == "bar"
+                                    else None)
         else:
             unit["side_source"] = "unit"
+            unit["hp_fraction"] = None
         out.append(unit)
     return out
 

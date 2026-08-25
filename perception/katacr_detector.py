@@ -291,11 +291,16 @@ class KataCRDetector:
         # then the caller's non-unit filter is applied afterwards -- doing it in the
         # other order would discard the bars this depends on.
         if self.use_bar_sides:
-            from perception.bar_reader import associate_bars
+            from perception.bar_reader import associate_bars, read_bar_fill
             for unit_idx, bar in associate_bars(results).items():
                 results[unit_idx]["side"] = bar["side"]
                 results[unit_idx]["side_source"] = "bar"
                 results[unit_idx]["bar_bbox"] = bar["bbox"]
+                # Only the wide `bar` carries a fill level; `bar-level` is the small
+                # level badge and has no HP meaning.
+                if bar["raw_name"] == "bar":
+                    results[unit_idx]["hp_fraction"] = read_bar_fill(
+                        screenshot, bar["bbox"], bar["side"])
 
         if not self.include_non_units:
             results = [d for d in results if d["raw_name"] not in NON_UNIT_CLASSES]
