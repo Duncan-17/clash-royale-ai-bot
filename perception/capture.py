@@ -62,7 +62,19 @@ class ScreenCapture:
             width=FRAME_WIDTH,
             height=FRAME_HEIGHT,
             bitrate=BITRATE,
-            screenshotbuffer=5,
+            # Lowered 5 -> 2 (2026-08-20) after Duncan reported the debug view running
+            # visibly BEHIND the live game. Our own side never queues -- _pump_frames
+            # overwrites _latest_frame and screenshot() always takes the freshest one --
+            # so buffered frames here are pure added latency, not throughput we use.
+            # Some buffer is still wanted so a decode hiccup doesn't starve the stream.
+            # NOTE: the larger, irreducible part of that delay is `adb shell screenrecord`
+            # being an H.264 ENCODER, which inherently buffers before emitting (typically
+            # 100-300ms). That's the price of the ~54fps this replaced ~1.5fps screencap
+            # with; removing it entirely would mean a different capture backend (scrcpy),
+            # a much bigger change. Cosmetic for a debug view -- every module reads the
+            # same frame, so the analysis stays self-consistent -- but it becomes a real
+            # problem in Phase 5 when the bot ACTS on what it sees.
+            screenshotbuffer=2,
             go_idle=GO_IDLE_SECONDS,
         )
 

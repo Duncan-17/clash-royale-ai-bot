@@ -14,3 +14,13 @@ knight
 minions
 mini_pekka
 musketeer
+
+# !! EMPTY AS OF 2026-08-20 — no card names below, only comments above.
+# Consequence, measured: with no deck listed, matching falls back to the FULL
+# 321-example library at ~48ms/frame, which is the single most expensive thing in
+# debug_live's loop (more than double the GPU detector's ~21ms). Listing your 8
+# cards here cuts it roughly 8x AND makes matching more accurate, since a hand slot
+# can then only be matched against cards that are actually in your deck.
+# Add one lowercase_with_underscores name per line, e.g.:
+#   giant
+#   musketeer

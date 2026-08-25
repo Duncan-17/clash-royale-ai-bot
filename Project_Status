@@ -739,7 +739,35 @@ and separately by citing a hallucinated `electro_giant` as a real play. Re-read 
 match has fully ended, and check a claimed "real play" against Duncan's own account before
 building on it.
 
+PERFORMANCE, 2026-08-20 (Duncan: "why is debugger view delayed behind the game and laggy")
+Profiled rather than guessed. Two separate causes, NEITHER of which is the new detector:
+
+1. CHOPPINESS — hand-card matching, ~48ms/frame, more than double the GPU detector's
+   ~21ms (tower_reader 1.5ms, spawn icons 0.4ms). It was re-identifying cards every
+   frame when a hand only actually changes on a play. Two fixes applied:
+   - debug_live now re-matches at CARD_MATCH_INTERVAL (0.2s, ~5Hz) and reuses the last
+     result between. Boxes still draw every frame so the overlay doesn't flicker.
+     cycle_tracker is updated ONLY on frames with a fresh match — feeding it the cached
+     tuple repeatedly would let identical values satisfy its HAND_STABLE_FRAMES debounce
+     with no new evidence, the exact false-confirmation that debounce prevents.
+   - **config/deck.txt is EMPTY** (comments only, no card names), so the deck-restriction
+     path that already exists was filtering nothing — 321 templates either way. Filling
+     it in cuts matching ~8x AND improves accuracy. Left for Duncan since only he knows
+     the current deck; a prominent note is now in the file itself.
+
+2. DELAY BEHIND THE GAME — not our loop. capture.py never queues (a background thread
+   overwrites _latest_frame; screenshot() always takes the freshest). Lowered
+   adbnativeblitz's screenshotbuffer 5 -> 2, which is pure latency we don't use. The
+   larger, irreducible part is that `adb shell screenrecord` is an H.264 ENCODER and
+   buffers before emitting (~100-300ms). That's the cost of the ~54fps that replaced
+   ~1.5fps screencap; removing it means a different backend (scrcpy) — a much bigger
+   change. Cosmetic for a debug view (every module reads the same frame, so analysis
+   stays self-consistent) but a REAL problem in Phase 5 when the bot acts on what it sees.
+
 Immediate next steps, in order:
+0. **Fill in `config/deck.txt`** with your current 8 cards — a one-minute change that is
+   the single biggest remaining perf win (~48ms -> ~6ms per frame) and improves card
+   accuracy at the same time.
 1. **Live-test the current branch** and decide whether KataCR becomes the default detector.
    Everything is on `experiment/detector-model-swap`; `master` is a clean checkpoint.
 2. **Finish the goblin_hut investigation** using the lead above — it is the last known

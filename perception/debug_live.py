@@ -1009,6 +1009,11 @@ def main():
               "running anyway, but expect it to stay unresolved.")
     opponent_tracker = OpponentPlayTracker(own_deck=deck or [])
     opponent_events_all = []  # full match history, oldest first — see OPPONENT_PLAYS_VISIBLE_ROWS
+    # Card-match throttling state -- see the block in the main loop for why.
+    CARD_MATCH_INTERVAL = 0.2  # seconds; ~5Hz, far faster than a hand can actually change
+    last_card_match_time = 0.0
+    last_slot_results = [("UNKNOWN", 0.0, (0, 165, 255))] * 4
+    cycle_state = None
     own_recent_plays = []  # [(card_slug, timestamp)] fed to opponent_tracker.update() each frame
     scroll_state = {"offset": 0}  # shared with on_panel_scroll via the mouse callback below
 
@@ -1043,27 +1048,52 @@ def main():
             t0 = time.time()
             screenshot = capture.screenshot()
             capture_ms = (time.time() - t0) * 1000
+            now_wall = time.time()
             display = screenshot.copy()
 
             t0 = time.time()
-            slot_results = []  # (name, score, color) per hand slot, for the panel
-            for (x1, y1, x2, y2) in hand_slot_regions():
-                crop = screenshot[y1:y2, x1:x2]
-                name, score = card_best_match(crop, card_templates)
-                if name is None or score < CARD_CONFIDENCE_THRESHOLD:
-                    box_color = color_for("UNKNOWN", score if score is not None else 0.0, CARD_CONFIDENCE_THRESHOLD)
-                    shown_name = name if name is not None else None
-                else:
-                    box_color = color_for(name, score, CARD_CONFIDENCE_THRESHOLD)
-                    shown_name = name
-                slot_results.append((shown_name if shown_name else "UNKNOWN", score or 0.0, box_color))
-                label = f"{shown_name or 'UNKNOWN'} {score:.2f}" if show_details else None
+            # Hand-card matching is by far the most expensive thing in this loop
+            # (measured 2026-08-20: ~48ms/frame against the full 321-example library,
+            # vs ~21ms for the GPU detector), and it is re-identifying cards that only
+            # actually change when a card is PLAYED -- a few times per match, not 12
+            # times per second. Re-matching at CARD_MATCH_INTERVAL instead of every
+            # frame is invisible to a human watching, and is most of the fix for the
+            # choppiness Duncan reported.
+            #
+            # cycle_tracker is deliberately only updated on frames where a FRESH match
+            # actually happened (see below). Feeding it the cached tuple repeatedly
+            # would let identical values satisfy its HAND_STABLE_FRAMES debounce
+            # without any new evidence, which is exactly the kind of false confirmation
+            # that debounce exists to prevent.
+            cards_fresh = (now_wall - last_card_match_time) >= CARD_MATCH_INTERVAL
+            if cards_fresh:
+                last_card_match_time = now_wall
+                slot_results = []  # (name, score, color) per hand slot, for the panel
+                for (x1, y1, x2, y2) in hand_slot_regions():
+                    crop = screenshot[y1:y2, x1:x2]
+                    name, score = card_best_match(crop, card_templates)
+                    if name is None or score < CARD_CONFIDENCE_THRESHOLD:
+                        box_color = color_for("UNKNOWN", score if score is not None else 0.0, CARD_CONFIDENCE_THRESHOLD)
+                        shown_name = name if name is not None else None
+                    else:
+                        box_color = color_for(name, score, CARD_CONFIDENCE_THRESHOLD)
+                        shown_name = name
+                    slot_results.append((shown_name if shown_name else "UNKNOWN", score or 0.0, box_color))
+                last_slot_results = slot_results
+            else:
+                slot_results = last_slot_results
+
+            # Boxes are drawn every frame from whichever results are current, so the
+            # overlay never flickers even though matching itself is throttled.
+            for (x1, y1, x2, y2), (shown_name, score, box_color) in zip(hand_slot_regions(), slot_results):
+                label = f"{shown_name} {score:.2f}" if show_details else None
                 draw_box(display, (x1, y1, x2, y2), box_color, label)
 
             elixir = read_elixir(screenshot, elixir_templates)
             match_ms = (time.time() - t0) * 1000
 
-            cycle_state = cycle_tracker.update(slot_results, elixir, now=time.time())
+            cycle_state = (cycle_tracker.update(slot_results, elixir, now=time.time())
+                            if cards_fresh else cycle_state)
             if cycle_state["last_play"]:
                 own_recent_plays.append((cycle_state["last_play"]["card"], cycle_state["last_play"]["frame_time"]))
 
@@ -1200,6 +1230,10 @@ def main():
                 # below is reset (reassignment, not a dedicated clear method)
                 opponent_events_all = []
                 own_recent_plays = []
+                # Also clear the throttled card-match cache, so a new match can't
+                # briefly show the previous match's last-known hand.
+                last_card_match_time = 0.0
+                cycle_state = None
                 scroll_state["offset"] = 0
                 print("Cycle tracker, opponent play tracker, and tower tracker reset — treat this as the start of a new match.")
     except KeyboardInterrupt:
