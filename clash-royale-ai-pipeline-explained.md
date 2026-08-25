@@ -192,6 +192,59 @@ positions, and every bounding-box label is exact and free.
 
 ---
 
+## 5d. The detector swap — KataCR (2026-08-20)
+
+Sections 5b/5c describe two modules built to work *around* a weak unit detector: reading
+team colour directly, and reading the deploy-delay icon. Both worked, but the underlying
+model kept producing problems no downstream logic could fix — hallucinated classes, poor
+recall on small units like Goblins, no spell coverage at all, and no knowledge of any card
+released after its training date.
+
+The decision, after Duncan found other people getting better results faster: stop patching
+around the model and replace it. `perception/katacr_detector.py` runs the two YOLOv8
+detectors published by [KataCR](https://github.com/wty-yy/KataCR) (MIT).
+
+**The reason this one is the keeper isn't accuracy — it's that the weights are open.**
+build-a-bot ships only an exported ONNX file, which can run but cannot be trained further.
+KataCR ships real PyTorch checkpoints plus an MIT-licensed dataset of 4,654 cut-out unit
+sprites and the generator that composites them into labelled training images. That means we
+can *improve* it, which was never possible before. Worth being clear that KataCR's weights
+are actually ~4 months OLDER than build-a-bot's — "new" here means newly adopted, not newer.
+
+What it detects that the old model couldn't: 155 classes vs 97, including 19 spells, the
+tower and unit health bars, the level badges, the deploy-delay clock, and the hand-card
+"selected" highlight. Several of those are things this project had built entire hand-
+calibrated pixel modules to find.
+
+Two preprocessing details were needed to make it work on our captures, both found by
+testing rather than reading: it must be fed the arena crop (feeding the whole screen made
+it read the hand-card row as board units), and the input width must be stride-32 aligned
+(their documented 568 is not, and fails outright).
+
+### 5e. Health bars and level badges as the side signal — `perception/bar_reader.py`
+
+Since the model now detects `bar` and `bar-level` as objects, section 5b's expensive
+colour-blob search collapses into a much simpler question: which detected bar belongs to
+which detected unit. `bar_reader.py` answers that, using geometry measured from real
+detections (a bar sits within a few pixels of its unit's horizontal centre, and its bottom
+edge lands within about 15px of the unit's top edge).
+
+The bar's own side then overrides the unit's. The reasoning matters: a troop sprite carries
+no team colour at all — that's the fact that made `side.onnx` unfixable — while a bar is
+literally colour-coded by team. Same model, same output channel, categorically better
+evidence.
+
+Association is one-to-one, which handles the real failure case: two overlapping units where
+only one has a visible bar. Handing that bar to the wrong unit turns a correct side into a
+wrong one.
+
+The same module also reads HP *fill* inside the bar, which finally delivers the long-planned
+"unit HP reading" feature. The colours came out essentially identical to the separately-
+derived tower-bar palette — two independent measurements converging, which is much stronger
+evidence than either alone.
+
+---
+
 ## 6. Current status
 
 This doc explains *how things work*, not *what's done right now* — that's `Project_Status`'s job, and it's kept current there.
