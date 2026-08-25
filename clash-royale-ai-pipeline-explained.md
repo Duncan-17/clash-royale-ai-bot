@@ -125,7 +125,9 @@ That still leaves "where on the board did it land." For that, the plan reuses `u
 
 Put together with a script that keeps clicking "next replay" so it can run unattended (`data/tv_royale_watcher.py`), this turns into an automated pipeline that watches match after match and quietly builds up a labeled dataset (saved under `data/unit_training/`) with no one having to draw a single box by hand. Training an actual new model on that dataset is intentionally a separate, later step — this pipeline is just about generating the data it would train on.
 
-Update, same day: this pipeline is now built (the data-generation pieces described above are real, tested code) but **paused before ever running live**, in favor of a cheaper fix tried first — see section 5b below. It isn't abandoned; if the cheaper fix doesn't close the gap, this is the fallback and doesn't need rebuilding.
+Update, same day: this pipeline was built (the data-generation pieces described above are real, tested code) but **paused before ever running live**, in favor of a cheaper fix tried first — see section 5b below.
+
+**Update 2026-08-20: UNPAUSED, and now the active workstream.** The cheaper fixes (5b/5c) helped but didn't close the gap, and the detector swap in 5d made training genuinely possible — KataCR's weights are trainable where the old ONNX was not. So generating real training data is now the priority, and the pieces described here get used for the first time. They have never run against real TV Royale footage, only synthetic tests, so expect geometric corrections. The gate is calibrating `config/tv_royale_regions.py`, which needs a live session and can't be written blind.
 
 ---
 

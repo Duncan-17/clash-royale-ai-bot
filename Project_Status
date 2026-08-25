@@ -772,16 +772,53 @@ Profiled rather than guessed. Two separate causes, NEITHER of which is the new d
    change. Cosmetic for a debug view (every module reads the same frame, so analysis
    stays self-consistent) but a REAL problem in Phase 5 when the bot acts on what it sees.
 
-Immediate next steps, in order:
-1. **Live-test the current branch** and decide whether KataCR becomes the default detector.
-   Everything is on `experiment/detector-model-swap`; `master` is a clean checkpoint.
-2. **Finish the goblin_hut investigation** using the lead above — it is the last known
-   correctness bug in opponent play detection.
-3. **Calibrate `config/tv_royale_regions.py`** — a live session with Duncan, and the real
-   gate on everything below it. This is the only step that needs him rather than the model.
-4. **Fine-tune from KataCR's checkpoints** on our own captures + their MIT sprite set,
-   adding the post-2024 cards neither model has.
+DECISION, 2026-08-20 — KataCR IS THE DETECTOR. SETTLED, NOT AN EXPERIMENT.
+Duncan, after live-testing it across several full games: "I have live tested the kataCR and
+that is definitely what we should stick with moving forward." The `--detector` flag and the
+build-a-bot ONNX path stay for now only as a fallback/comparison escape hatch; treat KataCR
+as the real target for all new work. The branch name
+(`experiment/detector-model-swap`) is now historical — the experiment concluded, it won.
+
+The deciding factor was never accuracy or recency (its weights are ~4 months OLDER than
+build-a-bot's): it is that the weights are OPEN and trainable, plus an MIT dataset of 4,654
+sprites and their generator. That is what makes every remaining detection problem — the
+archer/mini-pekka recall misses, the bridge-as-goblin_cage false positive, post-2024 cards —
+a training problem we can actually act on, rather than something to keep writing heuristics
+around.
+
+>>> NEXT PHASE: TV ROYALE DATA COLLECTION <<<
+This is the active workstream. Everything else below is deferred behind it.
+
+Why now: fine-tuning is the fix for every open detection issue, and training data is the
+only thing standing in the way. The pipeline for generating it was designed and built long
+ago (see "Custom unit-detector training data pipeline" above) and then PAUSED when
+side_reader.py looked like it might close the gap cheaply. It didn't, and the model swap
+made training viable, so the pipeline is now UNPAUSED and is the priority.
+
+The insight it is built on (Duncan's) still holds: TV Royale shows BOTH players' hands and
+elixir, so game_knowledge/cycle_tracker.py — already proven on our own side — can be run as
+two instances to get authoritative card + side + timestamp for every play in a real match,
+with no board-vision inference at all. That is what makes the labels trustworthy.
+
+Steps, in order:
+1. **Calibrate `config/tv_royale_regions.py`** — hand/elixir/arena regions for BOTH players
+   plus the navigation taps. Needs a live session with Duncan (same click-through-
+   find_coords.py process as every other calibration here); it cannot be written blind.
+   THIS IS THE GATE on everything after it, and the only step that needs him rather than
+   the model.
+2. **Re-verify the already-built pieces against real TV Royale frames** —
+   perception/frame_diff.py, data/auto_labeler.py, data/tv_royale_watcher.py all exist with
+   tests, but have NEVER been run against real TV Royale footage, only synthetic. Expect
+   the corrections to be geometric (TV Royale's layout differs from a normal match).
+3. **Run collection unattended** and let a real dataset accumulate.
+4. **Fine-tune from KataCR's checkpoints** on that data + their sprite set, adding the
+   post-2024 cards neither model has.
 5. **Then retire the compensation layers** listed above.
+
+DEFERRED by Duncan's own call (2026-08-20): the goblin_hut intermittent-play bug.
+"The goblin hut bug is minor and doesn't need any work currently." The full diagnosis and
+the concrete lead are preserved above so it can be picked up later without redoing the
+analysis — do not spend time on it before the TV Royale work.
 
 Still open regardless of direction:
 - Fill in `card_reference.json`'s `movement_speed` (not blocking; replaces the tracker's

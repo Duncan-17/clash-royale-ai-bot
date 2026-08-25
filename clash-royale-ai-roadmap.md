@@ -1,3 +1,10 @@
+> **STATUS 2026-08-20 — read Project_Status first.** Phases 1-3 (capture, control,
+> perception) are done. The unit detector is now KataCR's YOLOv8 pair (open weights,
+> trainable) — settled after live testing, not an experiment. **The active workstream
+> is TV Royale data collection**, so that detector can be fine-tuned on our own
+> footage; it is the fix for every remaining detection issue. Phase 4 (game knowledge)
+> is partly built. Phases 5+ (decision-making) are untouched.
+
 # Clash Royale AI Bot — Master Roadmap & Resource Guide
 
 Companion doc: `clash-royale-strategy-philosophy.md` covers *why* the bot values what it values (reward design, state features, module tagging). This doc covers *what to build, in what order, and what to reuse rather than build from scratch* — written to be handed directly to Claude Code as a working build plan.
