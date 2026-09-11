@@ -1634,3 +1634,103 @@ scrcpy (low-latency capture) matters before trusting --live reactions to fast pl
 NEXT: watch dry-run decisions live; tune placement/thresholds; then --live on a
 throwaway account. Longer term: richer policy, then the learned policy (self-play
 data now flows via record_own_play on every --live play).
+
+PHASE 5 BASELINE -- LIVE-VALIDATED (2026-09-11, Duncan): played a full game --live,
+"working as intended". The perceive->decide->act loop closes end-to-end on the real
+client. Committed e0dbc7c. NOTE on data: record_own_play() now fires on each live
+play (own-play GROUND TRUTH in PlayTracker), but that's the HOOK -- nothing yet
+WRITES labeled training crops to disk. The self-play self-labeling DATA ENGINE
+(crop+label own plays -> dataset) is a separate future build on this hook.
+
+================================================================================
+>>> HAND-CARD CLASSIFIER (YOLOv8-cls) -- TRAINING OVERNIGHT (2026-09-11) <<<
+================================================================================
+Replacing the brittle template-matching hand reader with a learned classifier
+(Duncan's idea; more consistent, covers all 122 cards, no per-card collection
+grind). Appearance model (Duncan, confirmed on samples): in-hand = the card's
+CURRENT art + an elixir gem bottom-middle, just dimmer/desaturated and cropped
+tighter than the vivid store icon; the musketeer "outdated art" case is a few
+reworked cards, fixed by folding in real crops.
+
+training/generate_hand_dataset.py (NEW): synthesizes slot crops from the official
+card_icons art -- composite over dark tray grey, crop to the ~0.80 slot aspect at a
+zoomed framing, then augment (desaturate+dim, TV-Royale cross-view perspective
+tilt, rotation, blur, JPEG). The elixir badge is NOT synthesized (non-
+discriminative, bottom-middle); instead REAL in-hand crops (assets/hand_templates
++ KataCR card_classification) are FOLDED IN so the classifier learns art=signal,
+badge=noise, and reworked-art cards self-correct. Output = ImageNet-style
+train/val folders. Generated: 122 classes, 9893 train + 1704 val (617 real crops).
+Duncan confirmed synthetic samples "look good... match the correct troop with
+similar cropping" (temp_img/hand_synth_sample.png).
+
+training/finetune_hand_cls.py (NEW): YOLOv8s-cls, imgsz 128, 100 epochs, patience
+25 -- same toolchain/GPU as the detector. Launched overnight (background,
+training/train_handcls.log). Confirmed running: head [512,122], 0 corrupt, AMP ok
+(autobatch fell back to batch 16 on the tiny imgsz -- harmless).
+Watch: Get-Content training\train_handcls.log -Wait -Tail 20
+NEXT (after it finishes): snapshot best.pt to assets/models/; wrap it for the hand
+reader (replace card_detector template matching; restrict logits to the 16 deck
+cards per match); VALIDATE on real TV Royale crops (RULE #1) before trusting it;
+then the TV Royale dual-cycle-tracker analysis is unblocked.
+
+HAND CLASSIFIER TRAINED (2026-09-11, ~5min, not overnight -- classification is
+fast). YOLOv8s-cls, early-stopped epoch 43. Synthetic+real val: top1 0.998 / top5
+1.0, 0.1ms/img. Snapshot assets/models/hand_cls/best.pt. CAVEAT: 0.998 is
+synthetic->synthetic (optimistic, like the detector's synthetic val) -- the REAL
+test is real TV Royale crops (Duncan capture + mark-up, RULE #1), pending. NEXT:
+wrap best.pt for the hand reader (TV Royale FIRST -- templates are weak there so
+no regression; leave card_detector for live play until proven), restrict logits to
+the 16 deck cards per match, validate on real crops.
+
+TV ROYALE CLASSIFIER DEBUGGER (2026-09-11). Live view to watch the hand
+classifier read both hands (the real-crop validation, as a debugger vs static
+frames -- Duncan's request). perception/hand_classifier.py (NEW): HandClassifier
+wraps assets/models/hand_cls/best.pt; classify_many() batches all a frame's slot
+crops into ONE predict; allowed= restricts to the 16 deck cards. tv_royale_hand_
+reader.read_both_hands_classifier(): batches 8 slots x (resting+shifted), builds
+the same SlotRead the drawing uses (selection via shifted-beats-resting margin).
+tv_royale_debug.py: NEW --classifier flag swaps the reader; header shows
+[classifier|decks]. Compiles + runs headless. RUN (live): python -m
+perception.tv_royale_debug --classifier  (fill config/tv_royale_decks.py with the
+match's two decks first so it restricts to 16). --collect still works to bank real
+crops for fine-tuning. Watching it read a real game IS the validation.
+
+HAND CLASSIFIER v2 -- LOADING STATE (2026-09-11). Duncan live-tested v1: ~100%
+on fully-loaded cards (validated the synthetic->real approach), but misread
+LOADING cards (greyed under a lighter film that retreats clockwise as elixir
+fills, ending on the plain grey card, then snaps to colour). Added the loading
+state to training/generate_hand_dataset.py (_greyed = pure B&W; _loading_state =
+translucent light film, alpha 0.6/shade 235, retreating clockwise by a random
+fill fraction), mixed into ~40% of crops; appearance tuned + confirmed by Duncan
+on samples. Retrained hand_cls_v2 (33 ep, ~5min); val top1 0.998 (val now includes
+loading crops). Snapshot auto-updated assets/models/hand_cls/best.pt (chain did
+regen->train->cp). Re-test: python -m perception.tv_royale_debug --classifier
+(unrestricted, all 122). NEXT: confirm loading cards read right live; if a few
+still slip, nudge film/loading-fraction or --collect real loading crops to fine-
+tune. Then wire the classifier into the real TV Royale hand reader + dual cycle
+tracker (the all-card hand reading that gates the TV Royale analysis).
+
+HAND CLASSIFIER v3 + SELECTION REMOVED + SELF-STOCKING QUEUE (2026-09-11).
+1) MINI_PEKKA BUG = slug naming. card_icons files are mini_p_e_k_k_a.png /
+   p_e_k_k_a.png; generate_hand_dataset used the RAW filename as the class, so it
+   made a "mini_p_e_k_k_a" class AND real_crops_for looked in the wrong folder ->
+   the 45 real mini_pekka crops were NEVER folded in -> synthetic-only, un-anchored
+   -> drifted to "archers" on real frames. Fixed: generator canonicalizes the icon
+   slug (inlined ICON_NAME_ALIASES) so the class is "mini_pekka"/"pekka" AND the real
+   crops fold in (verified 45 real). Retrained v3 (auto-snapshots best.pt); classes
+   now include mini_pekka/pekka, ugly names gone.
+2) SELECTION LOGIC REMOVED (Duncan: "it sees perfectly regardless; only adds
+   confusion + bugs"). read_both_hands_classifier now classifies the 8 RESTING crops
+   only (one batch), is_selected always False. The mini_pekka "SELECTED archers" was
+   this + the naming bug; authoritative play signal stays card-replacement+elixir-drop.
+3) SELF-STOCKING QUEUE (Duncan: "id a card it doesn't know well ... self-stock a queue
+   I can sort as it watches games"). perception/tv_royale_collector.UncertainCardCollector
+   banks slot crops the classifier is UNSURE about (conf < UNCERTAIN_CONF 0.70) to the
+   review queue, deduped/capped/throttled. tv_royale_debug --classifier --collect now
+   uses it. Sort with review_tv_hand_queue -> files to hand_templates -> next retrain
+   folds them in (real_crops_for). Loop closes: watch games -> uncertain cards queue ->
+   sort -> retrain -> fewer uncertains.
+KNOWN GAP: out-of-roster cards (e.g. Duncan saw "hero wizard") have no class -> forced
+to the nearest known card. Fix = add the card's art to card_icons + retrain (need the art).
+NEXT: wire the classifier reads into DUAL cycle_tracker (both players) -- the actual TV
+Royale analysis Duncan described ("build the cycles for both players").

@@ -14,9 +14,10 @@ perception/overlay.py). Boxes are colored by what they mean:
 Fill config/tv_royale_decks.py to restrict matching to the two real decks.
 
 Usage:
-    python -m perception.tv_royale_debug            # LIVE from the emulator
-    python -m perception.tv_royale_debug --static   # one frame from test_screenshot.png
-    python -m perception.tv_royale_debug --min-confidence 0.55
+    python -m perception.tv_royale_debug              # LIVE, template matching
+    python -m perception.tv_royale_debug --classifier # LIVE, YOLOv8-cls hand classifier
+    python -m perception.tv_royale_debug --static     # one frame from test_screenshot.png
+    python -m perception.tv_royale_debug --classifier --collect   # classifier reads + bank crops
 """
 
 import argparse
@@ -28,7 +29,7 @@ from config import tv_royale_regions as R
 from config.tv_royale_decks import restricted_templates, combined_cards
 from perception.card_detector import load_templates
 from perception.overlay import draw_box, draw_label, _alpha_rect
-from perception.tv_royale_hand_reader import read_hand
+from perception.tv_royale_hand_reader import read_hand, read_both_hands_classifier
 
 WINDOW = "TV Royale hand debug (q=quit)"
 
@@ -89,18 +90,24 @@ def cap_templates(templates, n):
     return out
 
 
-def read_frame(frame, templates):
-    """All per-frame reads in one place, so the live loop can both draw them
-    and feed them to the collector without re-matching."""
+def read_frame(frame, templates, clf=None):
+    """All per-frame reads in one place, so the live loop can both draw them and
+    feed them to the collector without re-matching. clf!=None -> read the hands
+    with the YOLOv8-cls classifier instead of template matching."""
+    if clf is not None:
+        enemy, friendly = read_both_hands_classifier(frame, clf)
+    else:
+        enemy = read_hand(frame, templates, is_enemy=True, lazy_conf=LAZY_RESTING_CONF)
+        friendly = read_hand(frame, templates, is_enemy=False, lazy_conf=LAZY_RESTING_CONF)
     return {
-        "enemy": read_hand(frame, templates, is_enemy=True, lazy_conf=LAZY_RESTING_CONF),
-        "friendly": read_hand(frame, templates, is_enemy=False, lazy_conf=LAZY_RESTING_CONF),
+        "enemy": enemy,
+        "friendly": friendly,
         "elix_e": R.read_enemy_elixir(frame),
         "elix_f": R.read_friendly_elixir(frame),
     }
 
 
-def draw(frame, data, min_conf, note=""):
+def draw(frame, data, min_conf, note="", backend="templates"):
     display = frame.copy()
     draw_player(display, True, data["enemy"], data["elix_e"], min_conf)
     draw_player(display, False, data["friendly"], data["elix_f"], min_conf)
@@ -110,16 +117,16 @@ def draw(frame, data, min_conf, note=""):
     sel_e = [i + 1 for i, r in enumerate(data["enemy"]) if r.is_selected] or "-"
     sel_f = [i + 1 for i, r in enumerate(data["friendly"]) if r.is_selected] or "-"
     header = (f"enemy {data['elix_e']:.1f}e sel:{sel_e}   |   "
-              f"friendly {data['elix_f']:.1f}e sel:{sel_f}   |   [{lib}]{note}")
+              f"friendly {data['elix_f']:.1f}e sel:{sel_f}   |   [{backend}|{lib}]{note}")
     _alpha_rect(display, (0, 0), (display.shape[1], 34), (20, 20, 20), 0.6)
     cv2.putText(display, header, (10, 23), cv2.FONT_HERSHEY_DUPLEX, 0.55,
                 (240, 240, 240), 1, cv2.LINE_AA)
     return display
 
 
-def render(frame, templates, min_conf, note=""):
+def render(frame, templates, min_conf, note="", clf=None, backend="templates"):
     """Convenience: read + draw in one call (used by --static)."""
-    return draw(frame, read_frame(frame, templates), min_conf, note)
+    return draw(frame, read_frame(frame, templates, clf), min_conf, note, backend=backend)
 
 
 def _collect_frame(collector, frame, data):
@@ -155,16 +162,31 @@ def main():
     p.add_argument("--match-examples", type=int, default=10,
                    help="Max stored examples per card compared at runtime (speed). "
                         "Default 10; 0 = use all (slower). Does not affect the library.")
+    p.add_argument("--classifier", action="store_true",
+                   help="Read hands with the YOLOv8-cls hand classifier "
+                        "(assets/models/hand_cls/best.pt) instead of template matching. "
+                        "Unrestricted (all 122 cards) unless --restrict.")
+    p.add_argument("--restrict", action="store_true",
+                   help="Restrict the classifier to the decks in config/tv_royale_decks.py "
+                        "(argmax over 16 instead of 122). Off by default -- a good classifier "
+                        "shouldn't need it; use to compare, or once decks are auto-read.")
     args = p.parse_args()
 
     templates = cap_templates(restricted_templates(load_templates()), args.match_examples)
+    clf, backend = None, "templates"
+    if args.classifier:
+        from perception.hand_classifier import HandClassifier
+        clf = HandClassifier(allowed=(combined_cards() if args.restrict else None))
+        n = len(clf.allowed_idx) if clf.allowed_idx else 122
+        backend = f"classifier:{n}"
+        print(f"Hand classifier loaded ({'restricted to ' + str(n) if clf.allowed_idx else 'all 122'} cards).")
     cv2.namedWindow(WINDOW, cv2.WINDOW_NORMAL)
 
     if args.static:
         frame = cv2.imread("test_screenshot.png")
         if frame is None:
             raise FileNotFoundError("test_screenshot.png not found — capture a TV Royale frame first.")
-        cv2.imshow(WINDOW, _fit(render(frame, templates, args.min_confidence)))
+        cv2.imshow(WINDOW, _fit(render(frame, templates, args.min_confidence, clf=clf, backend=backend)))
         print("Showing static frame. Press any key in the window to close.")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -175,22 +197,29 @@ def main():
     from control.actions import EmulatorController
     collector = None
     if args.collect:
-        from perception.tv_royale_collector import HandCropCollector
-        collector = HandCropCollector()
-        if not combined_cards():
-            print("NOTE: --collect works best with both decks filled in "
-                  "config/tv_royale_decks.py (guesses are then best-of-16).")
+        if clf is not None:
+            # classifier mode: self-stock a queue of the cards it's UNSURE about
+            from perception.tv_royale_collector import UncertainCardCollector, UNCERTAIN_CONF
+            collector = UncertainCardCollector()
+            print(f"Collecting UNCERTAIN cards (classifier conf < {UNCERTAIN_CONF}) to the "
+                  f"review queue -- sort with perception.review_tv_hand_queue.")
+        else:
+            from perception.tv_royale_collector import HandCropCollector
+            collector = HandCropCollector()
+            if not combined_cards():
+                print("NOTE: --collect works best with both decks filled in "
+                      "config/tv_royale_decks.py (guesses are then best-of-16).")
     print("Connecting to LDPlayer... (q in the window to quit)")
     capture = ScreenCapture(EmulatorController())
     try:
         while True:
             frame = capture.screenshot()
-            data = read_frame(frame, templates)
+            data = read_frame(frame, templates, clf)
             note = ""
             if collector:
                 _collect_frame(collector, frame, data)
                 note = f"   collected:{collector.saved}"
-            cv2.imshow(WINDOW, _fit(draw(frame, data, args.min_confidence, note)))
+            cv2.imshow(WINDOW, _fit(draw(frame, data, args.min_confidence, note, backend)))
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
     finally:

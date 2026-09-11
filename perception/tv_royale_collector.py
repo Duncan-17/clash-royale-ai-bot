@@ -106,3 +106,65 @@ class HandCropCollector:
         self._counts[card_name] = self._counts.get(card_name, 0) + 1
         self.saved += 1
         return path
+
+
+UNCERTAIN_CONF = 0.70  # classifier confidence below this = "doesn't know it well"
+
+
+class UncertainCardCollector:
+    """Banks slot crops the CLASSIFIER is UNSURE about (confidence < conf_below) to
+    the review queue -- so watching games self-stocks a queue of exactly the cards
+    the classifier doesn't know well (Duncan 2026-09-11: "it can id a card it doesn't
+    know well ... self-stock a queue I can sort as it watches games").
+
+    Sort it with review_tv_hand_queue -> labels file into assets/hand_templates/ ->
+    the next classifier retrain folds them in (generate_hand_dataset.real_crops_for).
+    Deduped per slot + capped per guessed card + time-throttled so one persistently-
+    uncertain slot doesn't flood the queue. Same queue/filename format as
+    HandCropCollector, so the existing review tool handles it unchanged.
+    """
+
+    def __init__(self, queue_dir=QUEUE_DIR, conf_below=UNCERTAIN_CONF, cap_per_card=25,
+                 throttle_s=0.5):
+        self.queue_dir = queue_dir
+        self.conf_below = conf_below
+        self.cap_per_card = cap_per_card
+        self.throttle_s = throttle_s
+        os.makedirs(queue_dir, exist_ok=True)
+        self._last_gray = {}   # slot_key -> last banked gray crop (dedup)
+        self._last_t = {}      # slot_key -> last bank time (throttle)
+        self._counts = {}
+        for f in os.listdir(queue_dir):
+            if f.endswith(".png"):
+                g = f.split("__", 1)[0]
+                self._counts[g] = self._counts.get(g, 0) + 1
+        self.saved = 0
+
+    def _is_dup(self, slot_key, crop):
+        prev = self._last_gray.get(slot_key)
+        if prev is None:
+            return False
+        cur = to_gray(crop)
+        return float(cv2.matchTemplate(cur, prev, cv2.TM_CCOEFF_NORMED)[0][0]) > DEDUP_THRESHOLD
+
+    def observe(self, slot_key, card, score, is_selected, crop):
+        """Feed one slot's classifier read. Banks the crop iff the classifier is
+        UNSURE (score < conf_below). is_selected is accepted for signature-compat
+        with HandCropCollector but ignored (selection handling was removed)."""
+        if card in (None, "UNKNOWN") or score >= self.conf_below or crop.size == 0:
+            return None
+        now = time.time()
+        if now - self._last_t.get(slot_key, 0.0) < self.throttle_s:
+            return None
+        if self._counts.get(card, 0) >= self.cap_per_card or self._is_dup(slot_key, crop):
+            return None
+        self._last_t[slot_key] = now
+        path = os.path.join(
+            self.queue_dir,
+            f"{card}__{score:.2f}__{slot_key[0]}{slot_key[1]}__{int(now * 1000)}.png",
+        )
+        cv2.imwrite(path, crop)
+        self._last_gray[slot_key] = to_gray(crop)
+        self._counts[card] = self._counts.get(card, 0) + 1
+        self.saved += 1
+        return path
