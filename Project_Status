@@ -1734,3 +1734,82 @@ KNOWN GAP: out-of-roster cards (e.g. Duncan saw "hero wizard") have no class -> 
 to the nearest known card. Fix = add the card's art to card_icons + retrain (need the art).
 NEXT: wire the classifier reads into DUAL cycle_tracker (both players) -- the actual TV
 Royale analysis Duncan described ("build the cycles for both players").
+
+================================================================================
+>>> TV ROYALE ANALYSIS ENGINE (2026-09-11) -- dual cycle tracker + self-collection <<<
+================================================================================
+The hand classifier made all-card hand reading solid, so the TV Royale learning
+engine is now wired end-to-end.
+
+game_knowledge/tv_royale_cycles.DualCycleTracker (NEW): two CycleTrackers (one per
+  player) fed by the classifier's both-hand reads + both elixir bars -> authoritative
+  PLAY events (card+time+side), each elixir-cross-checked inside CycleTracker exactly
+  like our own side. Tested headlessly (detects a play with correct side/card/cost).
+  SlotRead[0]/[1]=card/score is a drop-in for CycleTracker.slot_results; TV Royale
+  elixir float -> {value,fraction} via _elixir_dict.
+game_knowledge/tv_royale_analyzer.TvrAnalyzer (NEW): per-frame glue -- classifier
+  reads -> DualCycleTracker (logs plays to data/tv_royale_plays_log.jsonl) + self-
+  stock the UNCERTAIN-CARD queue + (--levels) the UNKNOWN-troop-LEVEL queue (detector
+  bar-level -> level_reader.read_level None -> queue_level_crop). start_game(decks)
+  per replay, observe(frame) per frame.
+data/tv_royale_watcher.py: REWIRED from template-collection to TvrAnalyzer. Auto-read
+  list decks feed each game's cycle trackers. New --levels flag. Compiles + analyzer
+  smoke-tested (no crash).
+TWO LIVE-VALIDATION ASSUMPTIONS (flagged in code): (a) deck->side mapping
+  (watch_game: list-left=top=enemy, right=bottom=friendly -- swap if cycles mirror);
+  (b) the v4 detector transferring to the TV Royale board for --levels.
+RUN (automated, unattended): python -m data.tv_royale_watcher --minutes 120 [--levels]
+RUN (manual watch view, cards): python -m perception.tv_royale_debug --classifier --collect
+
+================================================================================
+>>> HANDOFF: SELF-LEARNING LOGIC IS THE NEXT (NEW-CHAT) TASK -- READ THIS <<<
+================================================================================
+Duncan is taking the SELF-LEARNING LOGIC design into a fresh chat. Everything below
+it depends on is BUILT; the new chat designs how to turn the data into a learned
+policy. Companion docs: clash-royale-strategy-philosophy_1.md (why the bot values
+what it values -> reward terms + state features + module tags) and
+clash-royale-ai-roadmap.md Phases 7-9 (imitation -> reward -> RL).
+
+WHAT'S BUILT (the substrate the learning sits on):
+- PERCEPTION: our own YOLOv8l detector v4 (perception/yolo_detector.py, side from
+  bar colour + river-position seed, native bar/level/clock), thin_tracker (stable
+  IDs, class debounce, sticky side/level/hp), tower_reader (HP), level_reader
+  (digit templates 1-4). game_knowledge/play_tracker.py (own-play GROUND TRUTH +
+  opponent-play attribution, unit->card map). Evaluate: perception/detector_view.py --track.
+- BOARD STATE: game_knowledge/game_state.py build_game_state() -> GameState(own
+  elixir+hand w/ costs, tracked units, towers). This is the state-feature seed.
+- BASELINE BOT (plays live, --live validated): game_knowledge/bot.py (perceive->
+  RuleBasedPolicy->control.play_card + play_tracker.record_own_play). The rule policy
+  (policy.py) is the imitation seed + benchmark + safe prior, NOT the ceiling.
+- HAND CLASSIFIER (TV Royale hands, ~100% loaded, loading-state trained): assets/
+  models/hand_cls/best.pt, perception/hand_classifier.py.
+- TV ROYALE DATA ENGINE (this entry): dual cycle tracker -> data/tv_royale_plays_log.jsonl.
+
+TWO DATA SOURCES FOR LEARNING (Duncan's design):
+1. SELF-PLAY (primary, cleanest): the bot's own plays are ground truth
+   (record_own_play). Comes online as the bot plays more.
+2. TV ROYALE (this engine): real strong-player games, BOTH perspectives, authoritative
+   plays. Imitation SEED. Self-stocks its own card/level review queues to keep the
+   perception improving.
+
+THE LEARNING PLAN (per roadmap + philosophy, for the new chat to design/build):
+- Phase 7 IMITATION: (state -> action) from the TV Royale plays (+ self-play). Action
+  = card + WHEN (position/localization is a later add -- see "loose play localization"
+  below). Behavior-clone a policy that starts sane. Fixes the rule policy's ceiling.
+- Phase 8 REWARD (philosophy 4/5): leak penalty, plain elixir differential, tower
+  damage, win/loss (dense = trade value; sparse = win/loss). Reward OUTCOMES not
+  "followed the rule" (reward-hacking trap, philosophy 4.2).
+- Phase 9 RL: fine-tune the cloned policy (SB3 PPO/DQN) to exceed imitation + fix
+  distribution shift. Consider samdickson22/clash-simulator as the env.
+- The concepts to encode as FEATURES/LADDER/REWARD (drafted with Duncan): card roles,
+  the decision ladder (defend>counterpush>push>cycle>wait), matchup table, leak-avoid.
+  Hardcode only EXACT/KNOWN (costs, matchups, roles); leave JUDGMENT learned. Own
+  elixir/hand ARE inputs; opponent elixir/cycle inference stays learned (Duncan).
+
+STILL-OPEN / KNOWN GAPS (not blockers for designing the learning):
+- Loose PLAY LOCALIZATION on the board (link a play to the new unit for POSITION) --
+  the deleted auto_labeler/frame_diff, to be rebuilt THIN + confidence-gated (abstain
+  when unclear; never lose the card+timing). Card+timing works now; position later.
+- Out-of-roster cards (e.g. "hero wizard") -> add art to card_icons + retrain the classifier.
+- scrcpy low-latency capture -- matters when the bot ACTS on fast plays (Phase 5 polish).
+- The two TV-Royale live-validation assumptions above.

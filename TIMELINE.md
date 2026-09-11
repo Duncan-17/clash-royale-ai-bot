@@ -4,6 +4,16 @@ _Written 2026-09-07, updated 2026-09-08. Read `Project_Status` for live detail._
 Effort = focused working days; Calendar = intermittent evenings. Stage D depends
 on a reliable detector but can be designed anytime.
 
+## Where we are (2026-09-11) — read Project_Status "HANDOFF" block
+Perception DONE (our YOLOv8l detector v4 default; thin_tracker; play_tracker with
+own-play ground truth). Rule-based baseline BOT plays live (game_knowledge/bot.py,
+--live validated). Hand-card CLASSIFIER (YOLOv8-cls, assets/models/hand_cls) reads
+TV Royale hands ~100%. TV ROYALE ANALYSIS ENGINE wired: dual cycle tracker → both
+players' plays (data/tv_royale_plays_log.jsonl), self-stocking review queues for
+uncertain cards + unknown troop levels, in the unattended watcher. **NEXT (new
+chat): the SELF-LEARNING logic** (roadmap Phases 7–9: imitation from the plays →
+reward → RL). Everything it needs is built; see Project_Status handoff.
+
 ## Where we are (2026-09-08)
 Perception primitives (hand reading, elixir, towers, unit tracking) — **built**.
 TV Royale collection macro — **working**. Our own YOLOv8l detector — **trained**

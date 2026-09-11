@@ -1,4 +1,12 @@
-> **STATUS 2026-09-08 — read Project_Status + TIMELINE.md first.** Phases 1-3 (capture,
+> **STATUS 2026-09-11 — read Project_Status "HANDOFF" block first.** Perception DONE
+> (our YOLOv8l detector v4; thin_tracker; play_tracker w/ own-play ground truth). A
+> rule-based baseline BOT plays live (game_knowledge/bot.py). A hand-card CLASSIFIER
+> (YOLOv8-cls) reads TV Royale hands, feeding a DUAL cycle tracker → both players'
+> authoritative plays (data/tv_royale_plays_log.jsonl) + self-stocking review queues.
+> **NEXT (new chat): the SELF-LEARNING logic — Phases 7–9 below (imitation → reward →
+> RL).** The older status is retained beneath for history.
+>
+> **STATUS 2026-09-08.** Phases 1-3 (capture,
 > control, perception) done. **We now TRAIN OUR OWN detector**: a standard Ultralytics
 > YOLOv8l fine-tuned on KataCR's data (RTX 5080) — models v1 (synthetic) → v2 (+detects
 > HP bars/level badges/clocks; side from bar colour) → v3 (synthetic + KataCR's ~6,966

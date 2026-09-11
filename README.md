@@ -59,7 +59,8 @@ control/
     actions.py            — EmulatorController: tap(), swipe()
 perception/
     capture.py            — ScreenCapture: screenshot(), save()
-    card_detector.py      — cards in hand (template matching)
+    card_detector.py      — cards in hand (template matching; live-play hand)
+    hand_classifier.py    — YOLOv8-cls hand-card classifier (assets/models/hand_cls/) — TV Royale hands
     elixir_counter.py     — elixir number + bar fill
     yolo_detector.py      — OUR fine-tuned YOLOv8l (assets/models/cr_yolo_v*/) — the detector.
                             Reads side from bar colour + level from bar-level badges.
@@ -69,12 +70,16 @@ perception/
     thin_tracker.py       — stable IDs + class debounce + sticky side/level (replaced unit_tracker.py)
     tower_reader.py       — tower HP % from detected tower-bars (destroyed-state now driven by the detector)
 game_knowledge/
-    cycle_tracker.py      — our own card cycle
+    cycle_tracker.py      — reconstruct a hidden 4-card queue from hand reads + elixir
+    tv_royale_cycles.py   — DUAL cycle tracker (both players) for TV Royale → play events
+    tv_royale_analyzer.py — per-frame TV Royale analysis + self-collection (cards/levels)
     play_tracker.py       — own-play ground truth + opponent-play attribution (unit→card)
     zone_classifier.py    — per-lane ally/enemy/neutral zones
     game_state.py         — assembles perception into a GameState (elixir/hand/units/towers)
     policy.py             — rule-based baseline: what/where to play
     bot.py                — the Phase 5 loop: perceive → decide → act (DRY-RUN by default)
+data/
+    tv_royale_watcher.py  — unattended TV Royale watcher → analyzer (plays log + self-queues)
 config/
     settings.py           — ADB host/port, LDPlayer install path
     red_zones.py          — tower/water/arena-bounds geometry
