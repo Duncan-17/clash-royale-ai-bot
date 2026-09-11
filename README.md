@@ -72,6 +72,9 @@ game_knowledge/
     cycle_tracker.py      — our own card cycle
     play_tracker.py       — own-play ground truth + opponent-play attribution (unit→card)
     zone_classifier.py    — per-lane ally/enemy/neutral zones
+    game_state.py         — assembles perception into a GameState (elixir/hand/units/towers)
+    policy.py             — rule-based baseline: what/where to play
+    bot.py                — the Phase 5 loop: perceive → decide → act (DRY-RUN by default)
 config/
     settings.py           — ADB host/port, LDPlayer install path
     red_zones.py          — tower/water/arena-bounds geometry

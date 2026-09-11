@@ -1595,3 +1595,42 @@ FIX = a lower-latency capture backend (scrcpy, ~35-70ms). No quick win short of 
 same frame, self-consistent) but REAL for Phase 5 (bot acting on stale frames).
 DECISION (recommended): defer scrcpy until the Phase 5 run-up, where low latency
 actually matters; the debug view is usable as-is now that compute is light.
+
+================================================================================
+>>> PHASE 5 BASELINE BOT (2026-09-11) -- perception -> state -> policy -> action <<<
+================================================================================
+Duncan's call: rule-based baseline first (bootstraps the loop + self-play data;
+own elixir/hand ARE inputs as direct reads; only opponent elixir/cycle inference
+stays out). Built the whole loop, DRY-RUN by default.
+
+game_knowledge/game_state.py (NEW) -- build_game_state(frame, tracked_units,
+  tower_info, ...) -> GameState(elixir, elixir_fraction, hand[HandSlot], units,
+  towers). Only reliable DIRECT reads: own elixir (elixir_counter), own hand
+  (card_detector), detector->thin_tracker units, tower hp. card_costs() loads
+  slug->elixirCost from config/cards.json (121 cards; slugify+canonical_slug maps
+  display names to hand_templates slugs). HandSlot.known gates on MIN_HAND_CONF
+  0.55; GameState.affordable() = known priced cards with cost<=elixir, cheapest first.
+game_knowledge/policy.py (NEW) -- RuleBasedPolicy v0: (1) enemy troop on our half
+  -> drop cheapest affordable TROOP on the most-advanced threat (defend); (2) else
+  elixir>=PUSH_ELIXIR(7) -> push a troop up a bridge lane, alternating; (3) else
+  wait. Spells excluded (SPELL_CARDS). Placement clamped to our half + arena bounds
+  (config.red_zones geometry; lanes x 228/700, push y 725). Explicitly a bootstrap.
+control/actions.py -- EmulatorController.play_card(slot, x, y): tap the hand slot
+  centre (config.hand_region) then tap the placement point. The bot's one physical
+  action + the moment its OWN play becomes ground truth.
+game_knowledge/bot.py (NEW) -- the loop: capture -> yolo_detector -> thin_tracker
+  -> build_game_state -> RuleBasedPolicy -> (live) play_card + PlayTracker.
+  record_own_play. SAFE BY DEFAULT: DRY-RUN (prints decisions, does NOT tap);
+  --live to actually play; --once for one offline decision from test_screenshot.
+  ACTION_COOLDOWN_S=1.2 stops double-spending across capture latency.
+Tested: game_knowledge/test_policy.py (7/7) -- costs, affordable(), defend most-
+  advanced, spells excluded, push alternates lanes, low-elixir wait, low-conf hand
+  ignored. bot --once runs clean (waits safely on a non-match frame).
+
+RUN:  python -m game_knowledge.bot            # dry-run: watch decisions vs the match
+      python -m game_knowledge.bot --live      # once decisions look sane, let it play
+NOTE: the loop uses the same ~200ms-latency capture -- fine to validate logic, but
+scrcpy (low-latency capture) matters before trusting --live reactions to fast plays.
+NEXT: watch dry-run decisions live; tune placement/thresholds; then --live on a
+throwaway account. Longer term: richer policy, then the learned policy (self-play
+data now flows via record_own_play on every --live play).
