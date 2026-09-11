@@ -1,130 +1,246 @@
-"""
-The "macro" — watches TV Royale replays back-to-back, unattended, running
-the full auto-labeling pipeline (two game_knowledge.cycle_tracker.CycleTracker
-instances, one per TV Royale player, feeding data/auto_labeler.py's
-localize_play + YoloDatasetWriter) through each one. See Project_Status /
-clash-royale-ai-pipeline-explained.md section 5 for the full design.
+"""The macro: watches TV Royale replays back-to-back, unattended, banking clean
+in-hand card crops to the review queue (assets/unlabeled_tv_hand_queue/) so the
+library grows across many decks -- Duncan's "massive queue I label later".
 
-NOT runnable yet. Two things block it, both needing a live session with
-Duncan — can't be done blind, same reason config/hand_region.py,
-config/red_zones.py, and every other pixel calibration in this project was
-done against a real captured screenshot, not guessed:
+Flow (calibrated 2026-09-07 with Duncan; coords/timings in config/tv_royale_nav.py):
+  open TV Royale (menu -> TV Royale) -> read the list (Watch buttons + both
+  decks per game, perception/tv_royale_list) -> tap a game's Watch -> wait
+  WATCH_SETTLE_SECONDS for the entry transition -> collect while the match is
+  live (config.tv_royale_regions.is_in_match gate: both elixir bars present)
+  -> when the gate goes False the replay ended -> return to the list -> pick the
+  next unwatched game (dedup by deck signature) -> scroll for more -> next arena.
 
-1. config/tv_royale_regions.py doesn't exist yet — needs calibrating both
-   players' hand-slot/elixir/"Next" regions and the arena crop against a
-   real TV Royale screenshot, the same way config/hand_region.py was
-   calibrated for live play (see find_coords.py).
-2. The actual menu navigation (how to enter TV Royale mode from the main
-   menu, how to detect a replay has ended, how to advance to the next one)
-   isn't known yet — Clash Royale's TV Royale UI flow hasn't been explored.
-   The functions below are structural placeholders, not guesses — see
-   each one's docstring for exactly what's needed to fill them in.
+Collection matches hands against the FULL library (best-of-122) rather than a
+per-game deck restriction: it's robust (a misread list-deck card can't hide a
+real hand card) and you relabel the queue anyway. The auto-read decks ARE logged
+per game (data/tv_royale_decks_log.jsonl) so that deck data accumulates for
+free. is_in_match + WATCH_SETTLE + the collector's own stable-frame/selected
+guards are what keep transition/menu frames out of the queue.
 
-The per-frame pipeline logic itself (dual play detection -> localize_play
--> YoloDatasetWriter.write) is real and already tested — see
-data/auto_labeler.py and data/test_auto_labeler.py — just not wired into
-the main loop below yet, since that wiring needs the region constants from
-point 1.
+Two behaviors still on provisional defaults (see config/tv_royale_nav.py):
+scroll travel, and how to leave a finished replay (defaults to re-opening TV
+Royale, which lands on a clean list top whatever the end screen looks like).
+Calibrating REPLAY_EXIT_TAP would let it resume mid-list instead of re-scrolling.
 
-Usage (once calibrated):
+Usage:
     python -m data.tv_royale_watcher --minutes 120
     python -m data.tv_royale_watcher --max-replays 20
+    python -m data.tv_royale_watcher --arenas 3   # browse this many arenas
 """
 
 import argparse
+import json
+import os
 import time
 
+import cv2
+
+from config import tv_royale_nav as NAV
+from config.tv_royale_regions import is_in_match
 from control.actions import EmulatorController
-from data.auto_labeler import YoloDatasetWriter
-from game_knowledge.cycle_tracker import CycleTracker
 from perception.capture import ScreenCapture
-from perception.unit_detector import UnitDetector
-from perception.unit_tracker import UnitTracker
+from perception.card_detector import load_templates
+from perception.tv_royale_collector import HandCropCollector
+from perception.tv_royale_debug import cap_templates, read_frame, _collect_frame
+from perception.tv_royale_list import (
+    parse_list, deck_signature, load_icon_templates, detect_watch_buttons,
+)
 
-# from config.tv_royale_regions import (...)  # uncomment once calibrated
-
-
-def enter_tv_royale(controller: EmulatorController):
-    """Navigate from wherever the app currently is into TV Royale spectator
-    mode. Needs real tap coordinates from a live calibration session (see
-    module docstring) — deliberately not guessed."""
-    raise NotImplementedError(
-        "TV Royale navigation hasn't been calibrated yet. Needs a live session: "
-        "open TV Royale by hand once, capture each screen along the way and use "
-        "find_coords.py to get real tap coordinates, then fill this in."
-    )
+DECK_LOG = "data/tv_royale_decks_log.jsonl"
+WAIT_FOR_MATCH_TIMEOUT = 18.0   # after tapping Watch, give the replay this long to start
+END_CONFIRM_POLLS = 8           # consecutive not-in-match polls (~2s) to declare a replay ended
+MAX_SCROLLS_PER_ARENA = 12      # give up scrolling an arena's list after this many
 
 
-def replay_has_ended(screenshot) -> bool:
-    """True if the current screenshot shows a replay-ended state (results
-    screen, "next replay" prompt, etc.) rather than active gameplay. Needs
-    a real captured example of that screen to calibrate against — same
-    reasoning as enter_tv_royale."""
-    raise NotImplementedError("Needs a real captured 'replay ended' screenshot to calibrate against.")
+def _sleep(seconds):
+    time.sleep(seconds)
 
 
-def advance_to_next_replay(controller: EmulatorController):
-    """Tap whatever advances from a finished replay to the next one."""
-    raise NotImplementedError("Needs real tap coordinates from a live calibration session.")
+def open_tv_royale(controller, capture):
+    """Menu -> TV Royale. Lands on the list at the top."""
+    controller.tap(*NAV.MENU_ICON)
+    _sleep(NAV.MENU_SETTLE_SECONDS)
+    controller.tap(*NAV.TV_ROYALE_OPTION)
+    _sleep(NAV.MENU_SETTLE_SECONDS)
 
 
-def run(minutes: float = None, max_replays: int = None):
+def next_arena(controller):
+    controller.tap(*NAV.ARENA_NEXT)
+    _sleep(NAV.MENU_SETTLE_SECONDS)
+
+
+def scroll_list(controller):
+    x1, y1, x2, y2 = NAV.SCROLL_SWIPE
+    controller.swipe(x1, y1, x2, y2, NAV.SCROLL_DURATION_MS)
+    _sleep(NAV.MENU_SETTLE_SECONDS)
+
+
+def log_deck(game):
+    os.makedirs(os.path.dirname(DECK_LOG), exist_ok=True)
+    rec = {
+        "time": time.time(),
+        "left": [c for c, _ in game["left_deck"]],
+        "right": [c for c, _ in game["right_deck"]],
+        "left_scores": [round(s, 3) for _, s in game["left_deck"]],
+        "right_scores": [round(s, 3) for _, s in game["right_deck"]],
+    }
+    with open(DECK_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def on_list(capture):
+    """True if the TV Royale list is currently showing (a Watch button is
+    visible) -- used to confirm we've returned from a replay."""
+    buttons, _ = detect_watch_buttons(capture.screenshot())
+    return len(buttons) > 0
+
+
+def return_to_list(controller, capture, tries=8):
+    """A finished replay ends in transition/results screens; tap OK
+    (REPLAY_EXIT_TAP) until the list is back. The list returns at the same
+    scroll position with the just-watched game centered, so we do NOT re-open.
+    Retries because the transition length is variable -- once the list is
+    detected we stop (further taps would land on the list itself)."""
+    for _ in range(tries):
+        if on_list(capture):
+            return True
+        controller.tap(*NAV.REPLAY_EXIT_TAP)
+        _sleep(NAV.MENU_SETTLE_SECONDS)
+    return on_list(capture)
+
+
+def wait_for_match(capture, timeout=WAIT_FOR_MATCH_TIMEOUT):
+    """Poll until the replay is confirmed live, or give up. Returns True if the
+    match started."""
+    start = time.time()
+    while time.time() - start < timeout:
+        if is_in_match(capture.screenshot()):
+            return True
+        _sleep(NAV.POLL_INTERVAL_SECONDS)
+    return False
+
+
+def collect_match(capture, collector, hand_templates):
+    """Collect crops for the length of one replay. Returns when the match-active
+    gate has been False for END_CONFIRM_POLLS in a row (replay ended)."""
+    misses = 0
+    banked_start = collector.saved
+    while misses < END_CONFIRM_POLLS:
+        frame = capture.screenshot()
+        if is_in_match(frame):
+            misses = 0
+            data = read_frame(frame, hand_templates)
+            _collect_frame(collector, frame, data)
+        else:
+            misses += 1
+        _sleep(NAV.POLL_INTERVAL_SECONDS)
+    return collector.saved - banked_start
+
+
+def watch_game(controller, capture, game, collector, hand_templates):
+    """Tap into one game, collect it, and return to a clean list. Returns the
+    number of crops banked (or None if the replay never started)."""
+    controller.tap(*game["watch_xy"])
+    _sleep(NAV.WATCH_SETTLE_SECONDS)
+    if not wait_for_match(capture):
+        print("  replay didn't start (gate never went live) — backing out")
+        open_tv_royale(controller, capture)  # recover to a known screen
+        return None
+    banked = collect_match(capture, collector, hand_templates)
+    # Replay ended -> tap OK through the transition screens back to the list
+    # (same scroll position, just-watched game centered).
+    if not return_to_list(controller, capture):
+        print("  couldn't confirm return to list — re-opening TV Royale to recover")
+        open_tv_royale(controller, capture)
+    return banked
+
+
+def run(minutes=None, max_replays=None, arenas=1, games_per_arena=None,
+        arena_direction="next"):
     print("Connecting to LDPlayer...")
     controller = EmulatorController()
     capture = ScreenCapture(controller)
-    unit_detector = UnitDetector()
+    icon_templates = load_icon_templates()
+    hand_templates = cap_templates(load_templates(), 12)
+    collector = HandCropCollector()
 
-    writer = YoloDatasetWriter()
-    unit_tracker_top = UnitTracker()
-    unit_tracker_bottom = UnitTracker()
-    cycle_top = CycleTracker(deck=[])
-    cycle_bottom = CycleTracker(deck=[])
-
-    enter_tv_royale(controller)
-
+    watched = set()
+    replays = 0
     start = time.time()
-    replays_watched = 0
+
+    # Start from wherever the TV Royale list already is if you've opened it
+    # yourself (so you can pick the starting arena manually); only open it if
+    # we're not already on the list -- re-opening would jump to a default arena.
+    if not on_list(capture):
+        open_tv_royale(controller, capture)
+
+    arrow = NAV.ARENA_NEXT if arena_direction == "next" else NAV.ARENA_PREV
     try:
-        while True:
-            if minutes is not None and (time.time() - start) / 60 >= minutes:
-                break
-            if max_replays is not None and replays_watched >= max_replays:
-                break
+        for arena in range(arenas):
+            arena_games = 0
+            scrolls = 0
+            while True:
+                if minutes is not None and (time.time() - start) / 60 >= minutes:
+                    return
+                if max_replays is not None and replays >= max_replays:
+                    return
+                if games_per_arena is not None and arena_games >= games_per_arena:
+                    break  # hit this arena's game cap
 
-            screenshot = capture.screenshot()
-            if replay_has_ended(screenshot):
-                advance_to_next_replay(controller)
-                replays_watched += 1
-                continue
+                games = parse_list(capture.screenshot(), icon_templates)
+                fresh = [g for g in games if deck_signature(g) not in watched]
 
-            # Per-frame pipeline — structure only; region-dependent pieces
-            # wait on config/tv_royale_regions.py (see module docstring):
-            #   top_hand = [screenshot crop per top-player hand slot]
-            #   bottom_hand = [same for the bottom player]
-            #   top_elixir = read_elixir(screenshot, ..., region=TOP_ELIXIR_REGION)
-            #   bottom_elixir = read_elixir(screenshot, ..., region=BOTTOM_ELIXIR_REGION)
-            #   cycle_top.update(top_hand, top_elixir, now=time.time())
-            #   cycle_bottom.update(bottom_hand, bottom_elixir, now=time.time())
-            #   -- on a detected last_play from either side:
-            #      new_tracks = unit_tracker_*.update(unit_detector.detect(screenshot))
-            #      bbox = data.auto_labeler.localize_play(new_tracks, ...)
-            #      if bbox: writer.write(arena_crop, [(card, bbox)])  -- class only,
-            #      no side field (see data/auto_labeler.py's module docstring for why)
-            pass
+                if fresh:
+                    g = fresh[0]
+                    watched.add(deck_signature(g))
+                    log_deck(g)
+                    left = ",".join(c for c, _ in g["left_deck"][:4]) + ",..."
+                    print(f"[arena {arena+1}] game {arena_games+1}"
+                          f"{'/'+str(games_per_arena) if games_per_arena else ''} ({left}) "
+                          f"— {replays+1} total")
+                    banked = watch_game(controller, capture, g, collector, hand_templates)
+                    if banked is not None:
+                        replays += 1
+                        arena_games += 1
+                        print(f"  banked {banked} crop(s); {collector.saved} total")
+                    scrolls = 0  # progress made; the list stays in place (just-watched
+                    # game centered), so we just continue down from here
+                    continue
+
+                if scrolls < MAX_SCROLLS_PER_ARENA:
+                    scroll_list(controller)
+                    scrolls += 1
+                    continue
+                print(f"  arena {arena+1} ran out of new games after scrolling")
+                break  # this arena exhausted
+
+            # Advance to the next arena IN PLACE (tap the arrow; don't re-open,
+            # which would reset the arena). The arena banner is a fixed header,
+            # so the arrow is tappable regardless of list scroll position.
+            if arena < arenas - 1:
+                print(f"arena {arena+1} done ({arena_games} games) — advancing arena")
+                controller.tap(*arrow)
+                _sleep(NAV.MENU_SETTLE_SECONDS)
     except KeyboardInterrupt:
         pass
     finally:
-        print(f"Stopped after watching {replays_watched} replay(s).")
+        capture.stop()
+        print(f"\nStopped. Watched {replays} replay(s), banked {collector.saved} crop(s) to "
+              f"{collector.queue_dir}. Review: python -m perception.review_tv_hand_queue")
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--minutes", type=float, default=None,
-                         help="Stop after this many minutes (default: run until Ctrl+C)")
-    parser.add_argument("--max-replays", type=int, default=None,
-                         help="Stop after watching this many replays")
-    args = parser.parse_args()
-    run(minutes=args.minutes, max_replays=args.max_replays)
+    p = argparse.ArgumentParser()
+    p.add_argument("--minutes", type=float, default=None, help="Stop after this many minutes.")
+    p.add_argument("--max-replays", type=int, default=None, help="Stop after this many replays.")
+    p.add_argument("--arenas", type=int, default=1, help="How many arenas to browse.")
+    p.add_argument("--games-per-arena", type=int, default=None,
+                   help="Watch at most this many games per arena, then advance (e.g. 8).")
+    p.add_argument("--arena-direction", choices=["next", "prev"], default="next",
+                   help="Which arrow to change arena with: 'next'=▶ (right), 'prev'=◀ (left). Default next.")
+    args = p.parse_args()
+    run(minutes=args.minutes, max_replays=args.max_replays, arenas=args.arenas,
+        games_per_arena=args.games_per_arena, arena_direction=args.arena_direction)
 
 
 if __name__ == "__main__":

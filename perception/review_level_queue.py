@@ -14,7 +14,7 @@ import os
 
 import cv2
 
-from perception.side_reader import LEVEL_MAX_VALUE, LEVEL_MIN_VALUE, add_level_example
+from perception.level_reader import LEVEL_MAX_VALUE, LEVEL_MIN_VALUE, add_level_example
 
 QUEUE_DIR = "assets/unlabeled_level_queue"
 DISPLAY_SCALE = 8  # badge crops are tiny -- magnify for a human to actually read the digit

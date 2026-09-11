@@ -17,19 +17,44 @@ from config.settings import ADB_HOST, ADB_PATH, ADB_PORT
 
 class EmulatorController:
     def __init__(self, host: str = ADB_HOST, port: int = ADB_PORT):
-        self._ensure_adb_connected(host, port)
+        self._target = f"{host}:{port}"
+        self._ensure_adb_connected()
         # ppadb talks to the local adb *server* (always port 5037),
         # not directly to the emulator's own port.
         self.client = AdbClient(host="127.0.0.1", port=5037)
         self.device = self._get_device()
 
-    def _ensure_adb_connected(self, host: str, port: int):
-        result = subprocess.run(
-            [ADB_PATH, "connect", f"{host}:{port}"],
-            capture_output=True,
-            text=True,
-        )
-        print(result.stdout.strip() or result.stderr.strip())
+    def _serial_online(self) -> bool:
+        """True only if the target serial (127.0.0.1:5555) is a live 'device' in
+        `adb devices` -- NOT just that `adb connect` claimed success. LDPlayer
+        sometimes registers as `emulator-5554` instead, and a stale entry can
+        make `connect` print 'already connected' while the serial isn't actually
+        usable -- which is exactly what starves perception/capture.py (it targets
+        this serial for screenrecord) and produced the 'timed out waiting for the
+        first frame' failure."""
+        out = subprocess.run([ADB_PATH, "devices"], capture_output=True, text=True).stdout
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) == 2 and parts[0] == self._target and parts[1] == "device":
+                return True
+        return False
+
+    def _ensure_adb_connected(self):
+        """Bring the target serial online, recovering from the stale/wrong-serial
+        state automatically (connect -> verify -> on failure disconnect + retry)."""
+        for attempt in range(3):
+            if self._serial_online():
+                return
+            subprocess.run([ADB_PATH, "connect", self._target], capture_output=True, text=True)
+            if self._serial_online():
+                print(f"ADB connected: {self._target}")
+                return
+            # Stale/offline entry -- clear it and retry fresh next loop.
+            subprocess.run([ADB_PATH, "disconnect", self._target], capture_output=True, text=True)
+        # Last-ditch: it may still be reachable under emulator-XXXX; _get_device
+        # will surface a clear error if nothing usable is present.
+        print(f"WARNING: could not bring {self._target} online after retries "
+              f"(will try whatever `adb devices` shows).")
 
     def _get_device(self):
         devices = self.client.devices()
@@ -42,7 +67,14 @@ class EmulatorController:
                 "is using (run `adb.exe devices` from the LDPlayer install "
                 "folder to check)"
             )
-        print(f"Connected to: {devices[0].serial}")
+        # Prefer the target serial (127.0.0.1:5555) so the controller and the
+        # capture layer act on the SAME device -- capture.py hard-targets it.
+        for d in devices:
+            if d.serial == self._target:
+                print(f"Connected to: {d.serial}")
+                return d
+        print(f"Connected to: {devices[0].serial} (target {self._target} not "
+              f"listed; capture.py may still fail -- see EmulatorController).")
         return devices[0]
 
     def tap(self, x: int, y: int):

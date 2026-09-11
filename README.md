@@ -61,29 +61,32 @@ perception/
     capture.py            — ScreenCapture: screenshot(), save()
     card_detector.py      — cards in hand (template matching)
     elixir_counter.py     — elixir number + bar fill
-    unit_detector.py      — board units (bundled units.onnx)
-    katacr_detector.py    — EXPERIMENTAL alternative detector, same interface
-    unit_tracker.py       — persistent track IDs, side/class resolution
-    tower_reader.py       — tower HP % and destroyed state
-    side_reader.py        — ally/enemy from the level badge colour
-    spawn_icon_reader.py  — side at the moment of placement
-    debug_live.py         — the live debug view (start here)
+    yolo_detector.py      — OUR fine-tuned YOLOv8l (assets/models/cr_yolo_v*/) — the detector.
+                            Reads side from bar colour + level from bar-level badges.
+    bar_reader.py         — associates detected bars/level-badges to units (side, HP, level)
+    level_reader.py       — reads the level digit from a detected bar-level badge (+ its template lib)
+    detector_view.py      — the live/eval view: raw detector + optional thin tracker (--track)
+    thin_tracker.py       — stable IDs + class debounce + sticky side/level (replaced unit_tracker.py)
+    tower_reader.py       — tower HP % from detected tower-bars (destroyed-state now driven by the detector)
 game_knowledge/
     cycle_tracker.py      — our own card cycle
-    opponent_play_tracker.py — what the opponent played, and when
     zone_classifier.py    — per-lane ally/enemy/neutral zones
 config/
     settings.py           — ADB host/port, LDPlayer install path
     red_zones.py          — tower/water/arena-bounds geometry
+training/                 — OUR detector: generators + fine-tune harness (see training/README.md)
 vendor/                   — reference repos, gitignored (see roadmap §3)
 test_connection.py        — run this first
 ```
 
-Most day-to-day work happens through the live debug view:
+Most day-to-day work happens through the detector view:
 ```
-python -m perception.debug_live               # current detector
-python -m perception.debug_live --detector katacr   # experimental
+python -m perception.detector_view              # OUR detector, raw output (evaluate)
+python -m perception.detector_view --track      # + thin tracker + game-state panel
+python -m perception.detector_view --track --collect-levels   # + bank level badges to review
 ```
+See `training/README.md` for how the detector is trained (v1→v4), and
+`Project_Status` / `TIMELINE.md` / `clash-royale-ai-roadmap.md` for the plan.
 
 ## Reference repos (clone into vendor/ when you want to study them)
 

@@ -145,31 +145,39 @@ def read_number(screenshot: np.ndarray, templates: dict = None):
 CONFIRM_RUN = 4  # consecutive filled px (scanning right-to-left) required to confirm we've hit the real fill region
 
 
-def read_bar_fill(screenshot: np.ndarray) -> float:
-    """Returns a continuous elixir estimate (0.0-10.0) by measuring how far
-    across the bar the fill (solid pink OR the lighter in-progress glow)
-    extends.
+def read_bar_fill_region(screenshot: np.ndarray, left_x: float, right_x: float,
+                         sample_y_rows, num_segments: int = NUM_SEGMENTS) -> float:
+    """Continuous 0-`num_segments` fill estimate for ANY horizontal elixir
+    bar, given its own geometry. The live single-player bar's read_bar_fill()
+    below is just this called with the module-level constants; the TV Royale
+    spectator layout has two of these bars at different y-bands (see
+    config/tv_royale_regions.py) and calls this directly with their params.
 
-    Scans right-to-left and combines rows by majority vote (not by
-    averaging raw pixel colors first) — the elixir NUMBER glyph is drawn
-    directly on top of the bar's leftmost ~90px, and its black outline +
-    white fill, blended across multiple sample rows, produces intermediate
-    colors that can spuriously look like real fill. Scanning from the
-    right avoids the digit entirely for anything but very low elixir, and
-    per-row majority voting (rather than blending colors together) avoids
-    manufacturing colors no single pixel actually has."""
-    left, right = int(BAR_LEFT_X), int(BAR_RIGHT_X)
+    Measures how far across the bar the fill (solid pink OR the lighter
+    in-progress glow) extends. Scans right-to-left and combines rows by
+    majority vote (not by averaging raw pixel colors first) — the elixir
+    NUMBER glyph is drawn over the bar's leftmost pixels in the live layout,
+    and its black outline + white fill, blended across multiple sample rows,
+    produces intermediate colors that can spuriously look like real fill.
+    Scanning from the right avoids the digit for anything but very low
+    elixir, and per-row majority voting avoids manufacturing colors no
+    single pixel actually has. The FILLED_SUM_THRESHOLD/FILLED_MAX_GREEN
+    test separates magenta fill and navy empty within the bar's own rows;
+    it is the caller's job to pass rows that lie inside the bar body (in TV
+    Royale the surrounding clan banners are themselves colored, so rows
+    straying out of the bar would misread)."""
+    left, right = int(left_x), int(right_x)
     width = right - left
 
     votes = np.zeros(width, dtype=int)
-    for y in BAR_SAMPLE_Y_ROWS:
+    for y in sample_y_rows:
         row = screenshot[y, left:right].astype(int)
         sums = row.sum(axis=1)
         green = row[:, 1]
         filled = (sums > FILLED_SUM_THRESHOLD) & (green < FILLED_MAX_GREEN)
         votes += filled
 
-    filled = votes >= (len(BAR_SAMPLE_Y_ROWS) // 2 + 1)  # majority of rows agree
+    filled = votes >= (len(sample_y_rows) // 2 + 1)  # majority of rows agree
 
     boundary_offset = 0  # stays 0 (elixir 0) if no confirmed fill run is ever found
     consecutive_filled = 0
@@ -183,7 +191,14 @@ def read_bar_fill(screenshot: np.ndarray) -> float:
             consecutive_filled = 0
 
     fraction = boundary_offset / width
-    return round(fraction * NUM_SEGMENTS, 2)
+    return round(fraction * num_segments, 2)
+
+
+def read_bar_fill(screenshot: np.ndarray) -> float:
+    """Continuous elixir estimate (0.0-10.0) for the live single-player bar
+    (module-level BAR_* geometry). Thin wrapper over read_bar_fill_region."""
+    return read_bar_fill_region(screenshot, BAR_LEFT_X, BAR_RIGHT_X,
+                                BAR_SAMPLE_Y_ROWS, NUM_SEGMENTS)
 
 
 def read_elixir(screenshot: np.ndarray, templates: dict = None) -> dict:

@@ -19,33 +19,28 @@ python find_coords.py                        (click test_screenshot.png to print
 
 -- Card-in-hand detection --
 python -m perception.card_detector           (reads test_screenshot.png, prints best-guess card + confidence per hand slot)
-python -m perception.debug_card_match         (saves temp_img/debug_hand_match.png — crop vs matched template, side by side)
-python -m perception.debug_live                (live overlay during play — full details in the "Unit/tower detection" quick-command entry below, since it now covers cards+elixir+units+tracking together)
+python -m perception.debug_card_match         (saves temp_img/debug_hand_match.png -- crop vs matched template, side by side)
 python -m perception.label_hand <s1> <s2> <s3> <s4>   (label the 4 current hand cards from test_screenshot.png)
 python -m perception.collect_cards            (capture + prompt for any UNKNOWN slot; add --relabel to re-check known slots too)
-python -m perception.auto_collect             (hands-off collection during a live match — cards, elixir digits, level-badge digits, AND spawn-icon detections [see "Ally/enemy side reading" below], same loop; run and just play; --seconds N to auto-stop; Ctrl+C otherwise)
-python -m perception.review_queue             (batch-label whatever auto_collect.py couldn't confidently recognize)
-python -m perception.seed_deck_from_catalog   (bootstrap config/deck.txt cards with zero examples from their catalog icon — run once per deck change)
-python -m perception.download_card_icons      (one-time: downloads all 122 catalog icons into assets/card_icons/ — reference art, not used for matching)
+python -m perception.review_queue             (batch-label whatever collect_cards queued to assets/unlabeled_queue/)
+python -m perception.seed_deck_from_catalog   (bootstrap config/deck.txt cards with zero examples from their catalog icon -- run once per deck change)
+python -m perception.download_card_icons      (one-time: downloads all 122 catalog icons into assets/card_icons/ -- reference art, not used for matching)
 
 -- Elixir counting --
 python -m perception.elixir_counter           (reads test_screenshot.png, prints number read + bar estimate + fraction)
-python -m perception.label_elixir <value>     (manual fallback: label the elixir value 0-10 currently shown in test_screenshot.png — usually unnecessary now, auto_collect.py self-labels elixir digits automatically)
+python -m perception.label_elixir <value>     (manual: label the elixir value 0-10 currently shown in test_screenshot.png)
 
--- Unit/tower detection --
-python -m perception.unit_detector             (reads test_screenshot.png, prints each detected unit + side + confidence + bbox, saves temp_img/debug_unit_detections.png)
-python -m perception.debug_live --detailed     (two windows: gameplay overlay [boxes only by default; 'd' toggles compact labels/tags, --detailed starts in that mode; 'u' toggles unit box coloring between "side" [blue=ally/red=enemy/orange=no signal, A/E letter prefix] and "confidence" [units.onnx's own detection confidence, green/orange/red]] + a separate Debug panel with full text detail — cards, elixir, and two STABLE 10x5 GRIDS for units, "LIVE READ" [raw, will flicker] and "TRACKED" [smoothed via unit_tracker.py, dimmed = presumed/unconfirmed]. Writes logs/debug_live_<timestamp>.jsonl by default (one JSON line/frame: hand, elixir, live units, tracked units) — hand this to Claude for flicker analysis; --no-log to skip, --log path.jsonl for a specific path. Auto-saves temp_img/side_conflicts/ snapshots (raw frame + JSON) whenever two same-name tracks disagree on side within 100px — real data for diagnosing perception/side_reader.py issues, no manual timing needed. Also auto-saves temp_img/opponent_plays/ snapshots (full board + JSON) every time game_knowledge/opponent_play_tracker.py closes a play-group event, boxed/labeled by attribution — the phantom "didn't persist" noise category is filtered out of both this and the live panel (still logged in full in the JSONL). 'q' to quit, 'r' to reset cycle/opponent tracking for a new match.)
+-- Unit / tower / side / level detection (OUR YOLO detector, default cr_yolo_v4) --
+python -m perception.detector_view             (LIVE raw detector view: units + bars/levels/clocks/towers, side from bar colour)
+python -m perception.detector_view --track     (+ thin tracker: stable IDs, class debounce, sticky side/level; fixed-layout game panel -- units by side+HP+level, tower health, enemy plays)
+python -m perception.detector_view --static    (one frame from test_screenshot.png instead of live)
+python -m perception.detector_view --model assets/models/cr_yolo_v3/best.pt   (evaluate a specific model WITHOUT changing the default)
+python -m perception.yolo_detector [path.png]  (prints raw detections + bboxes for one frame; default test_screenshot.png)
+python -m perception.bar_reader [path.png]     (prints units with associated side / side_source / HP / level for one frame)
 
--- Ally/enemy side reading (perception/side_reader.py, replaced side.onnx 2026-08-16/17) --
-python -m perception.side_reader               (tests against calibration crops + real test_screenshot.png detections + every saved temp_img/side_conflicts/ snapshot, saves temp_img/debug_side_reader.png)
-python -m perception.label_level_badge <value> <x1> <y1> <x2> <y2>   (manual: labels one level-badge digit example from test_screenshot.png — get the bbox from unit_detector.py's output first)
-python -m perception.auto_collect              (also now auto-collects level-badge digit AND spawn-icon examples in the same loop — see below)
-python -m perception.review_level_queue        (batch-labels whatever auto_collect.py couldn't confidently match against existing digit templates)
-
--- Spawn/deploy-delay icon reading (perception/spawn_icon_reader.py, added 2026-08-17 — reads which side just placed a card, direct from the deploy-delay icon's color) --
-python -m perception.spawn_icon_reader         (tests against the one confirmed real capture on file, saves temp_img/debug_spawn_icon_reader.png)
-python -m perception.review_spawn_icon_queue   (batch-review/label whatever auto_collect.py queued — EVERY detection goes here first, nothing auto-files into assets/spawn_icon_templates/ without this review step, see CLAUDE.md Rule #2)
-Or just drag-and-drop queued files from assets/unlabeled_spawn_icon_queue/ directly into assets/spawn_icon_templates/{ally,enemy}/ by hand and delete bad captures — equally valid, load_templates() just reads whatever .png files are sitting in each folder, no naming convention required.
+-- Level-badge digit reading (perception/level_reader.py; templates in assets/level_badge_templates/, only 1-4 so far) --
+python -m perception.detector_view --track --collect-levels   (bank each detected level badge to assets/unlabeled_level_queue/ for review -- RULE #2, nothing auto-files)
+python -m perception.review_level_queue        (batch-label the queued badge crops -> grows the digit library so more levels read as a number instead of "Lv?")
 
 -- Game data (rarely needed — already fetched) --
 python fetch_card_roster.py                   (re-pulls the 122-card roster from the CR API into config/cards.json)
@@ -828,4 +823,679 @@ Still open regardless of direction:
 - Re-run `game_knowledge/compare_ground_truth.py` against a fresh match to measure the
   detector swap quantitatively rather than by impression.
 - Confirm the United Clash API key was actually rotated (see Phase 2 above).
+
+TV ROYALE CALIBRATION SESSION, 2026-08-25 — THE GATE IS CLEARED
+---------------------------------------------------------------
+Step 1 of the TV Royale phase (calibrate config/tv_royale_regions.py) is DONE,
+against a real TV Royale spectator capture Duncan supplied (test_screenshot.png,
+900x1600, el HERRE top / DOMMINICK bottom). All regions confirmed with him via
+find_coords.py clicks + mspaint overlays (RULE #1).
+
+config/tv_royale_regions.py (NEW) — the whole gate:
+- enemy_hand_slots()/friendly_hand_slots(): 4 boxes each. Slot 1 & 4 corners
+  clicked by Duncan; slots 2,3 derived by even spacing (hand_region.py method).
+  The layout is vertically MIRRORED about y=800 (confirmed numerically).
+- ENEMY_NEXT / FRIENDLY_NEXT: the "Next:" preview cards.
+- SELECTED_SHIFT_Y=25: a selected/being-placed card translates ~25px TOWARD the
+  arena (down for top, up for bottom), same size. Measured from the selected
+  fireball and validated empirically — fireball at its resting box scores 0.40,
+  at the +25 shifted box 0.851. Play-detection must apply this on the mid-play slot.
+- Elixir bars: BOTH bars share ELIXIR_BAR_LEFT_X=91, ELIXIR_BAR_RIGHT_X=864
+  (solved simultaneously from ground truth top=6/bottom=3; RIGHT=864 matches the
+  live bar's own constant exactly). Per-bar body rows ENEMY_ELIXIR_ROWS /
+  FRIENDLY_ELIXIR_ROWS. read_enemy_elixir()/read_friendly_elixir() read 6.55/3.51
+  (floors = ground truth, fraction = real regen glow). NOTE: the bottom bar is at
+  y~1560-1573, NOT the y~1585 I first boxed (that's the blue clan banner).
+
+elixir_counter.py — refactored read_bar_fill into a parametrized
+read_bar_fill_region(screenshot, left_x, right_x, sample_rows); the live path is
+now a thin wrapper, unregressed. The TV Royale bars call the core directly.
+
+card_detector.identify_hand — parametrized: now takes optional `regions` (was
+hardcoded to the live hand) and `min_confidence`. Read both TV Royale hands by
+calling once per player with the region functions above.
+
+FULL-CATALOG HAND TEMPLATES — assets/hand_templates/ now covers all 122 catalog
+cards (was just Duncan's 8). New tool perception/seed_all_cards_from_catalog.py
+seeds every assets/card_icons/<card>.png as catalog_seed.png; the 8 deck cards
+keep their 40 real examples. A REAL BUG Duncan caught and we fixed: the catalog
+icons are 420x285 RGBA framed cards with transparency only in the rounded
+corners; a plain imread flattened those corners to WHITE, dominating the
+correlation and making seeds useless. Fix (clean_icon_to_seed): alpha-composite
+over GREY (Duncan's pick vs black/white — closest to the dark in-hand tray) and
+crop to the art's bbox so the seed isn't framed wider than the in-hand crops.
+
+TWO-DECK RESTRICTION — config/tv_royale_decks.py (NEW). Duncan reads BOTH players'
+8-card decks off the TV Royale menu before a match and fills ENEMY_DECK /
+FRIENDLY_DECK (top/bottom); restricted_templates() filters the library to those
+16, the two-deck analogue of deck.txt. normalize()+ALIASES make names forgiving
+(PEKKA->p_e_k_k_a, X-Bow->x-bow, ...); _validate() warns on a typo'd card.
+
+HAND READER + CARD SELECTION — perception/tv_royale_hand_reader.py (NEW).
+read_both_hands(screenshot, templates) -> (enemy_reads, friendly_reads), each a
+list of 4 SlotRead(card, score, is_selected, resting_score, shifted_score).
+Handles the raised/selected state: each slot is matched at BOTH its resting box
+and the SELECTED_SHIFT_Y-shifted box, better score wins, and is_selected flags
+when the shifted read beats resting by SELECT_MARGIN=0.10. Validated on the real
+frame: the selected fireball (E3) reads is_selected=True, fireball 0.85 (resting
+0.40/shifted 0.85), while every non-selected slot reads is_selected=False from
+its resting box. SlotRead is a namedtuple so [0]/[1]=card/score — drop-in for
+cycle_tracker.update's slot_results.
+  Selection semantics (Duncan, 2026-08-25): a player can select/deselect any
+hand card endlessly (raised effect); a card is only PLAYED when they then tap
+the arena, at which point it leaves hand and the next queue card fills the slot.
+So is_selected = "poised to play", NOT "played". The authoritative played signal
+stays cycle_tracker's: slot's confirmed card REPLACED by a new one + an elixir
+drop ~= the card's cost. That slot-change+elixir-drop event, run for BOTH players
+via two CycleTrackers, is what will auto-label the YOLO training data — this
+reader feeds those two trackers and the is_selected/timing hint sharpens
+localize_play's window. cycle_tracker applies its OWN confidence_threshold, so
+construct the two TVR CycleTrackers with a lower one (catalog seeds score
+~0.4-0.8) and tune against real footage.
+
+LIVE DEBUG VIEW — perception/tv_royale_debug.py (NEW, 2026-08-30). The
+two-player analogue of debug_live for hand reading: LIVE from the emulator
+(`python -m perception.tv_royale_debug`) or one frame from test_screenshot.png
+(`--static`). Draws the rounded object-ID box on each of the 8 slots +
+next-cards + both elixir bars, labeled card+score; a SELECTED slot is GOLD with
+its shifted (true) box also outlined so the raise-handling is visible;
+GREEN/ORANGE split confident vs weak matches at `--min-confidence` (default
+0.55). Header shows both elixirs + which slot each player has selected. Live
+path never overwrites test_screenshot.png (in-memory frames). To test selection
+handling: raise a different card in a hand, capture, confirm the GOLD marker
+follows it.
+  Refactor enabling it: the rounded-box / label-plate / alpha-rect design
+primitives moved out of debug_live.py into perception/overlay.py (single source
+of truth); debug_live imports them back, behavior unchanged. overlay.py is
+cv2+numpy only so importing it doesn't drag in a detector.
+
+CARD COLLECTION LOOP — how the library GROWS (2026-08-30). Key constraint
+Duncan raised: TV Royale is SPECTATING, so he can't select/play cards himself —
+real examples must be harvested from the replay's own hands as they cycle.
+- perception/tv_royale_collector.py (NEW): HandCropCollector banks a clean
+  RESTING crop of a slot's card when it's read the same for STABLE_FRAMES=3
+  (skips wipe/transition frames), NOT selected (a raised card's resting crop is
+  junk), once per appearance (not every frame), deduped + capped per card. It
+  queues to assets/unlabeled_tv_hand_queue/ with the best-of-16 guess+score in
+  the filename — it does NOT auto-file into hand_templates (RULE #2).
+- Wired into the debug view: `python -m perception.tv_royale_debug --collect`
+  banks crops while you watch (header shows "collected:N"). Verified: 5 identical
+  frames bank 7 crops (one per non-selected slot, once each; the selected slot is
+  skipped).
+- perception/review_tv_hand_queue.py (NEW): shows each banked crop + its guess;
+  Enter accepts the guess, typing a name overrides, 'x' discards -> filed into
+  hand_templates via card_detector.add_example. This is the review gate.
+Workflow to grow knowledge: fill both decks in config/tv_royale_decks.py ->
+run tv_royale_debug --collect over a few matches -> review_tv_hand_queue to
+confirm/label -> the real examples out-score the catalog seeds. Repeat across
+matches until every card in the decks you watch has real coverage; then raise
+the match threshold back up.
+
+THE MACRO — UNATTENDED REPLAY-WATCHING (2026-09-07, built). data/tv_royale_watcher.py
+is no longer a stub. Flow: open TV Royale (menu 821,181 -> TV option 551,357) -> read
+the list -> tap a game's Watch -> 8s settle -> collect while is_in_match -> replay ends
+-> return to list -> next unwatched game -> scroll -> next arena. Pieces:
+- perception/tv_royale_list.py (NEW): parse_list() finds Watch buttons by template match
+  (assets/tv_royale/watch_button.png, fixed x~655, dynamic y) and reads BOTH players'
+  8-card decks per row (COLOR match vs card_icons -- Duncan verified game 1 as near-perfect,
+  even untrained cards like skeleton_dragons; only miss was mega_minion->magic_archer).
+  deck_signature() dedups games across scroll/re-open. THIS is the auto-deck-detection
+  (no API -- the list shows both full decks; API can't map screen->replay, confirmed dead end).
+- config/tv_royale_nav.py (NEW): confirmed taps (menu icon, TV option, arena ◀▶ 72,277 /
+  821,273, close 840,186, replay-end OK button 446,1452) + WATCH_SETTLE_SECONDS=8. A finished
+  replay shows transition/results screens with an OK button; return_to_list() taps OK until
+  on_list() sees a Watch button again. Confirmed by Duncan: the list returns to the SAME scroll
+  position with the just-watched game CENTERED, so the macro does NOT re-open (no reset to top)
+  -- it continues down from where it was, dedup by deck_signature skipping the centered game.
+  Provisional, still needs live tuning: SCROLL_SWIPE travel and arena-advance behavior.
+- config.tv_royale_regions.is_in_match(): both elixir bars show magenta -> live gameplay.
+  Validated: True on a real match frame, False on the list screen. This is the transition-
+  screen gate -- collection only runs while it's True, and its going False = replay ended.
+- Collection matches hands against the FULL 122-card library (best-of-122; robust, you
+  relabel anyway); auto-read decks are logged to data/tv_royale_decks_log.jsonl.
+Run: python -m data.tv_royale_watcher --minutes 120  (or --max-replays N, --arenas K).
+Compiles + all offline-testable pieces verified; the tap TIMINGS/scroll need a live run to tune.
+Calibration tools added: perception/grab_screen.py (grab any screen to a named file, never
+touches test_screenshot.png) and find_coords.py now takes a filename arg.
+STILL TO CALIBRATE live: SCROLL_SWIPE travel and arena-advance behavior (the OK-button
+replay exit + return-in-place is now confirmed).
+
+TYPO-PROOF REVIEW (2026-09-07). A misspelled 'minni_pekka' folder got created during
+review, orphaning 5 examples and polluting match guesses (it became a candidate). Fixed:
+merged those 5 into mini_pekka (now 45 real) and deleted the typo folder. Prevented going
+forward: card_detector.known_card_slugs() (card_icons names UNION hand_templates folders
+with real examples) + resolve_card_name(typed) -> (slug, suggestions); review_tv_hand_queue
+now refuses any name not in the canonical set, offering difflib close matches, and loops on
+that crop until a valid name or discard. Verified: 'minni_pekka'/'wizrd' rejected w/
+suggestions; 'Mini Pekka'/'skeleton dragons' normalize+file.
+
+NAMING UNIFIED (2026-09-07). The mini_pekka vs mini_p_e_k_k_a vs p_e_k_k_a split is resolved
+onto the READABLE slugs pekka / mini_pekka (NOT the awkward card_icons spelling; note the old
+units.onnx CLASS_NAMES uses pekka/minipekka but that detector is deprecated, so it wasn't the
+authority). Done: hand_templates/p_e_k_k_a -> pekka, deleted redundant mini_p_e_k_k_a seed
+(mini_pekka keeps its 45 real). New card_detector.canonical_slug()/ICON_NAME_ALIASES folds the
+two ugly card_icons filenames to the readable slugs, applied wherever an icon FILENAME becomes a
+slug: known_card_slugs(), tv_royale_list.load_icon_templates() (list reads now emit mini_pekka),
+seed_all_cards_from_catalog(). resolve_card_name() also strips dots so 'P.E.K.K.A'->pekka. deck
+ALIASES cleaned of the ugly targets. Only known remaining split source is external
+(card_icons filenames themselves), now contained behind canonical_slug.
+
+>>> YOLO TRAINING SETUP STARTED (2026-09-07) <<<
+Duncan has an RTX 5080 (16GB). Env already good: torch 2.11.0+cu128, ultralytics 8.4.123,
+CUDA on the 5080 -- a 1-epoch coco8 GPU smoke train ran clean (the Blackwell sm_120 setup,
+the usual gotcha, is done via the cu128 wheel). KataCR checkpoints present at
+assets/models/katacr/detector{1,2}.pt.
+DECISION: train a STANDARD Ultralytics YOLOv8l (class-only), NOT KataCR's custom-head model.
+Why: KataCR's model has a custom ally/enemy "belonging" channel and its training path pulls
+JAX (no good native Windows GPU story) -- a rabbit hole. We want KataCR's DATA (4,654 MIT
+sprites + spell/bar/clock taxonomy), not their weights; a standard YOLO learns those classes
+fine, runs on Windows/5080 with standard tooling, and its plain best.pt is trivial to wrap.
+We lose the native side channel, but our pipeline already determines side separately, so it
+costs nothing we rely on. Keep KataCR detector*.pt as the CURRENT detector until ours wins.
+Built: training/finetune.py (yolov8l fine-tune harness, imgsz 896, batch -1 auto-fit) +
+training/README.md (full decision + data routes). gitignore updated (runs/, datasets/, *.pt).
+NEXT: get data. Route 1 (primary): clone wty-yy/Clash-Royale-Detection-Dataset (MIT sprites +
+backgrounds), write a JAX-FREE generator (KataCR's own generator.py imports jax via a viz
+helper) to composite sprites -> YOLO labels, then finetune. Route 2: a Roboflow real set as
+held-out validation. Route 3 (long-term): our TV Royale auto-labeled data once stages 2-3 wired.
+Sprites are NOT bundled in vendor/katacr -- they need the dataset-repo download.
+
+PREP DONE (2026-09-07, GPU-free, while Duncan gamed): cloned wty-yy/Clash-Royale-Detection-Dataset
+to vendor/cr-detection-dataset (1.3GB, 154 classes / 4627 sprites in images/segment/<class>/,
+plus annotated arena backgrounds in images/part2/background/ whose .txt files already label the
+towers as YOLO). Wrote training/generate_dataset.py -- a JAX-FREE generator: picks a background
+(keeps its tower labels, first 5 YOLO fields), alpha-composites N random RGBA unit sprites into
+the PLAYFIELD only (y 0.13-0.84, excluding the top banner + bottom hand-tray UI so no false labels
+land on UI), writes standard `class cx cy w h` labels + data.yaml. Verified on samples: boxes align,
+towers labeled, units on-field. Belonging dropped (class-only, both ally/enemy variants -> same
+class). Generating a first 4000-image set to training/datasets/cr_synth now (background job).
+SCALE FIX (2026-09-07, Duncan spotted troops looked too small): the sprites were segmented at
+KataCR's canonical background_size 568x896, but 25/29 backgrounds ship at ~1030x1622 (~1.8x),
+so native-size sprites pasted ~1.8x too small. Fix: generate_dataset.py now resizes every bg to
+568x896 (CANONICAL_W/H) before pasting (framing is consistent across resolutions -- king-tower is
+~0.16 of frame height at every size -- and tower labels are normalized, so the resize is clean and
+matches KataCR's proven train scale). Verified visually: troops now correct in-game scale (giant
+big, goblins small, proportional to towers). Regenerated the 4000-img cr_synth at the fixed scale.
+FIRST TRAINING RUN DONE (2026-09-08): fine-tuned yolov8l on cr_synth, 100 epochs / 7.1 hrs on
+the 5080 (GPU mem only ~3.2G). Synthetic-val: P 0.99 R 0.969 mAP50 0.982 mAP50-95 0.922, 4.5ms/img
+-- STRONG but synthetic-to-synthetic so optimistic; real-game accuracy unknown until tested live.
+best.pt (88MB) preserved to assets/models/cr_yolo_v1/best.pt (+ its data.yaml); also in
+runs/detect/cr_finetune/weights/. train.log in training/.
+WRAPPER BUILT (2026-09-08): perception/yolo_detector.py wraps cr_yolo_v1/best.pt with the same
+detect() interface as unit_detector/katacr_detector; wired into debug_live as `--detector yolo`.
+Class-only (side="unknown", left to the pipeline); feeds the FULL frame (our model trained on
+full-frame backgrounds, unlike katacr which arena-crops); red-zone filtered; non-unit UI classes
+filtered unless include_non_units. Verified on a synthetic val image: clean high-conf detections
+(0.95-0.99) of towers+units. LIVE A/B NOT DONE YET -- that's the real test.
+WATCH ON FIRST LIVE TEST: synthetic data is KataCR's ~0.635 aspect (568x896) but our LDPlayer
+frame is 900x1600 (~0.5625) -- a real aspect/scale gap that may distort units at inference. If
+detection looks off, the fix is to REGENERATE the synthetic set at our emulator's own resolution/
+aspect (train should match inference), not patch the wrapper.
+COMPARE LIVE: python -m perception.debug_live --detector yolo   (vs --detector katacr / onnx).
+
+LIVE A/B VERDICT (2026-09-08, Duncan): our YOLO has BETTER RECALL than KataCR (sees troops KataCR
+misses -- the core goal). Weaknesses, both expected: (1) friend/foe -- our model is class-only,
+side="unknown" in the overlay; real pipeline resolves side separately, so not a real limitation.
+(2) loses troops during certain animations -- the synthetic->real gap (clean static composites vs
+real motion/blur/effects); the real fix is stage B real data. VERDICT: ship it as the working
+detector; recall win validates the approach.
+
+DIRECTION (Duncan): integrate bar/bar-level/clock detection into YOLO to RETIRE side_reader.py +
+spawn_icon_reader.py + tower_reader hardcoded coords -- do this FIRST, stage B second.
+DONE this session: extended training/generate_dataset.py to composite bar+bar-level (above units)
+and clock (on units) per KataCR generation_config offsets, ally/blue vs enemy/red color variants
+(bar COLOR -> side at inference), spells/objects get no bar (imported spell/object lists). Verified
+on samples: bars/levels/clocks render + labeled correctly. Regenerating training/datasets/cr_synth_v2
+with components now (background). NEXT: retrain on v2 (GPU, ~7hr) -> cr_yolo_v2 that natively detects
+bars/levels/clocks; then update yolo_detector.py to READ bar color->side + clock->spawn (the payoff:
+retire the pixel modules) and value-reads (level number OCR / HP fill) on YOLO-located crops.
+Retrain cmd: python training/finetune.py --data training/datasets/cr_synth_v2/data.yaml --name cr_finetune_v2
+
+V2 DONE + WIRED (2026-09-08): cr_yolo_v2 trained (100 ep, mAP50 0.965, P 0.988 R 0.925 synthetic).
+CONFIRMED it detects the new components (bar/bar-level/clock at 0.94-0.96). Preserved to
+assets/models/cr_yolo_v2/best.pt. Wired the payoff into perception/yolo_detector.py (now defaults
+to v2): new bar_reader.side_from_bar_color() reads a detected bar's COLOUR (blue=ally/red=enemy),
+then apply_bar_sides associates bars->units -> unit side + hp_fraction. Verified on synthetic: units
+with a bar get ally/enemy (side_source='bar'); bar-less units stay 'unknown' (correct -- undamaged
+troops show no bar). This is the mechanism that RETIRES side_reader.py. debug_live --detector yolo
+now shows friend/foe from bar colour. NOTE: synthetic hp_fraction reads 0.0 (sprite bar colours !=
+the real-capture-measured UNIT_BAR_FILLED_BGR); expected to read correctly on REAL frames.
+NEXT: re-run live A/B (friend/foe should now work on real frames); then clock->spawn association +
+level-number read on the bar-level crop; then start actually retiring side_reader/spawn_icon_reader;
+then stage B (real data).
+
+REDUCE PLAN STARTED (2026-09-08). Live A/B of v2 (Duncan): friend/foe now works (bar colour),
+recall still good, BUT: own archers rarely detected (archer IS trained -- 44 sprites/235 instances
+-- but it's a SMALL, thin-count object at the emulator's mismatched 900x1600 aspect vs 568x896
+train); spawn/clock "not applied" (ROOT CAUSE: debug_live builds YoloDetector(include_non_units=
+False) so v2's clock detections are DISCARDED, and the old pixel find_spawn_icon runs instead);
+false opponent plays (archer-queen/bandit not in game) = detector false positives that
+opponent_play_tracker faithfully converts to plays (its phantom-filters were tuned to units.onnx).
+Also a real TAXONOMY MISMATCH: detector classes are individual UNITS (archer/minion/goblin) but
+the card/play logic thinks in CARDS (archers/minions/goblins) -- a correct detection doesn't line
+up with the card layer. Duncan's call (agreed): REDUCE the compensation stack (side_reader,
+spawn_icon_reader, tower_reader hardcoded coords, heavy unit_tracker accumulators, opponent
+play-tracker guards -- all built to survive a weak detector) before adding logic; fix the DETECTOR
+(regen synthetic at emulator aspect + more small-unit instances, then stage B real data) as the
+real lever. STEP 1 DONE: perception/detector_view.py -- raw detector output only (units + bars/
+levels/clocks/towers, side from bar colour, no trackers/plays/pixel-heuristics). Run:
+python -m perception.detector_view [--detector yolo|katacr] [--static]. NEXT: evaluate detector
+cleanly live, then fix wiring (use YOLO clock/bar/tower), regen at emulator aspect, rebuild a thin
+tracker, stage B.
+
+DETECTOR_VIEW FEEDBACK (2026-09-08): raw view "far smoother", spawn/level now visible. Issues:
+(1) hand-tray elixir badge on the fireball card read as 'clock' all game -- FIXED: yolo_detector
+now drops detections centred outside the arena band (ARENA_Y_MIN 0.05 / ARENA_Y_MAX 0.85; hand
+cards start ~0.83), killing hand/banner UI false positives. (2) archers STILL blind even in raw
+view -> confirmed detector-side (aspect gap 0.635 train vs 0.5625 emulator hits small units; archer
+only 235 instances). Plan: try inference-side aspect correction (pad emulator frame to train
+aspect, no retrain) FIRST, else regenerate at emulator aspect + more small-unit density + retrain.
+(3) princess towers show cannoneer-tower + tower-bar -- explained: tower and its HP bar are separate
+classes (correct); cannoneer vs queen is a tower-skin misclassification (cosmetic, we use tower_reader).
+Added info panel to detector_view (units list w/ side+conf, component tally).
+FOLLOWUPS (2026-09-08): (a) yolo_detector now PADS the frame to TRAIN_ASPECT (568/896) before
+inference and maps boxes back -- restores trained unit scale (emulator 900x1600 -> 1014x1600),
+the cheap no-retrain attempt at the archer miss. (b) detector_view --no-ui hides towers/tower-bars.
+Verified: pad math correct, boxes map back in-range. DECISION POINT: if archers now detected =
+aspect gap was the whole problem (free fix); if still missing = regenerate with more archer/small-
+unit density + retrain.
+
+ARCHER ROOT CAUSE = DOMAIN GAP (2026-09-08). Aspect fix helped only slightly (Duncan: archers picked
+up "a tiny bit, infrequently"). His key insight: goblins/spear-goblins (equally small) detect GREAT,
+so it's not size. Confirmed via model.val() on synthetic: archer recall 0.778 == goblin 0.781 -- the
+model LEARNED archers fine on synthetic. And instance counts are similar (archer 235 >= goblin 206),
+so not density. It's a SYNTHETIC->REAL appearance gap, worst for visually-subtle units (archers thin/
+tan/humanoid vs distinctively-green goblins). FIX = REAL training data: KataCR's part2 ships ~6966
+REAL labeled frames (203 real archers) in the SAME 201-class taxonomy, YOLO-convertible (drop state
+cols). Built training/prepare_real_data.py -> training/datasets/cr_real + cr_combined.yaml (trains
+SYNTHETIC + REAL). Real data also targets the animation losses + false positives. Prep running.
+RETRAIN v3: python training/finetune.py --data training/datasets/cr_combined.yaml --name cr_finetune_v3
+This supersedes the "regenerate synthetic" idea -- real data is the domain-gap fix synthetic can't be.
+
+ADB SERIAL FIX (2026-09-08): debug_live failed with "timed out waiting for the first frame" after
+an LDPlayer restart -- the emulator had re-registered as emulator-5554 while capture.py hard-targets
+127.0.0.1:5555, and EmulatorController's connect printed a misleading "already connected" without
+verifying. Fixed control/actions.py: _ensure_adb_connected now VERIFIES the target serial is a live
+'device' in `adb devices`, auto-recovers (connect->verify->disconnect+retry x3), and _get_device
+prefers the target serial over emulator-5554. Self-heals now; no manual `adb connect` needed. Then: hold out a Roboflow real set to
+measure, add post-2024 sprites (APK dumps) to the generator, and wire the TV Royale real-data
+pipeline (stages B) to add real footage.
+(Original launch cmd: python training/finetune.py --data training/datasets/cr_synth/data.yaml)
+TIMELINE.md written (whole-project timeline/estimates). Full class names come from
+vendor/cr-detection-dataset/images/part2/ClashRoyale_detection.yaml (the generator reads it).
+
+GATE FIX — macro tried to LEAVE a live match (2026-09-07). First multi-arena run exited
+game 1 mid-match, failed return_to_list, re-opened TV Royale, and then found 0 games in
+arenas 2-4 (broken app state). Root cause: is_in_match required MAGENTA fill in each bar's
+LEFT segment (elixir points 1-2), so it false-negatived whenever a player dipped below ~2
+elixir -- routine. Fixed: is_in_match now detects the bar's STRUCTURE (magenta fill OR navy
+empty across the full width), on EITHER bar, independent of elixir level. Measured: top bar
+0.945 bar-colored on gameplay vs 0.044 on the list. config.tv_royale_regions._bar_colored_frac
++ BAR_PRESENT_MIN=0.5 replace the old _bar_has_magenta. Also added per-arena game cap
+(--games-per-arena) and in-place arena advance (tap ◀/▶ arrow, no re-open which reset the
+arena) + start-where-you-are (skip open if already on_list, so you pick the starting arena).
+
+REVIEW/COLLECT FIXES (2026-09-07, after first real queue sort):
+- Near-identical crops in a row: tv_royale_collector.observe() reset the slot's "saved"
+  flag on any UNKNOWN/selected/low-score frame, so a single flicker mid-appearance re-banked
+  the same card. Fixed: invalid frames leave slot state untouched; only a genuinely different
+  card starts a new appearance. DEDUP_THRESHOLD 0.97 -> 0.92 (idle animation makes same-card
+  banks ~0.9 similar). Verified: a knight run with a flicker banks once.
+- review_tv_hand_queue Enter dead-end on stale guesses (old 'minni_pekka' filenames from before
+  the naming fix): Enter now files the EFFECTIVE name (guess resolved to canonical, else best
+  close match) and the prompt shows it ("Enter=file 'mini_pekka'"); numbered suggestions +
+  resolve_card_name folding icon aliases (mini_p_e_k_k_a->mini_pekka) round it out.
+
+PERF FIX (2026-09-07) — the --collect view ran at ~5fps (Duncan's report).
+Profiled to read_frame at ~200ms: 16 best_match calls/frame (both hands x
+resting+shifted positions) x ~324 stored examples. Two fixes, no accuracy loss
+seen: (1) tv_royale_hand_reader read_hand/_read_slot take lazy_conf -- when the
+RESTING match already clears it (0.6), skip the shifted match, since a selected
+card can't score high at rest anyway (halves the common case; E3's selected
+fireball still detected because its resting score 0.40 < 0.6 forces the shifted
+read). (2) tv_royale_debug.cap_templates thins each card to ~10 evenly-spread
+examples at MATCH time only (--match-examples, default 10; the stored library is
+untouched) -- the debug_live-flagged lever. Plus waitKey 30->1. Result: ~35ms
+-> ~29fps.
+
+OPEN / NEXT (for Duncan's own test games, then automation):
+- Card-match CONFIDENCE for catalog seeds vs the smaller cross-view TVR crops
+  sits ~0.4-0.8, under the 0.85 threshold tuned for the live 40-real-example
+  library. With the 16-card restriction the best-of-16 argmax is meaningful well
+  below 0.85 — identify_hand now takes min_confidence for this; TUNE it against
+  real footage. Longer term, replace catalog seeds with TV-Royale-native in-hand
+  examples (queue for review per RULE #2) collected during real matches.
+- frame_diff.py / auto_labeler.localize_play STILL only synthetic-tested — they
+  need before/after frames + live unit_tracker new-tracks, i.e. an actual
+  running collection, not a static frame. Verify during step 3.
+- Step "c" (TV Royale menu-navigation taps in tv_royale_watcher.py:
+  enter_tv_royale/replay_has_ended/advance_to_next_replay) DEFERRED by Duncan —
+  he'll run a couple of matches manually and check before automating.
+- P.E.K.K.A catalog slug is p_e_k_k_a; there is no plain "pekka.png". mini pekka
+  exists as both mini_pekka (has real examples) and mini_p_e_k_k_a (catalog).
 - Own-side cycle tracking, elixir counting and tower reading are done and stable.
+
+================================================================================
+>>> LATEST STATE — 2026-09-09 (read this block first for current status) <<<
+================================================================================
+
+DETECTOR v3 TRAINED + LIVE-WINNING. cr_yolo_v3 (synthetic + KataCR's ~6966 real part2 frames)
+trained on the 5080. Run stopped cleanly at epoch 88/100 overnight (terminal closed or PC slept --
+NOT a crash; epoch 88 had full metrics). Resumable from runs/detect/cr_finetune_v3/weights/last.pt
+via `python training/finetune.py --model <last.pt> --resume` (finetune.py now handles resume: reads
+saved config, ignores other args; --data not required with --resume). Snapshot: assets/models/
+cr_yolo_v3/best.pt (optimizer-stripped 87MB). Metrics (combined real+synthetic val): mAP50 0.973,
+recall 0.953 -- beats v2 (0.965/0.925) on the HARDER val. Duncan live verdict (half game): "so much
+better", follows/IDs troops well, reliably sees text/elixir/spawn-icons/health-bars.
+Evaluate any model: python -m perception.detector_view --model assets/models/cr_yolo_v3/best.pt
+[--no-ui] [--conf 0.1].
+
+TWO RESIDUAL ISSUES + DATA-BACKED ANALYSIS:
+1. ARCHERS still weak live (other small troops incl. goblins fine). NOT density (real: archer 184 ~
+   goblin 214 ~ spear-goblin 178) and NOT size (goblins fine). v3 val archer recall 0.863 ~ goblin
+   0.855 -- so the model LEARNED archers; the live gap is bigger than the val gap => a residual
+   domain gap between KataCR's real captures and DUNCAN'S emulator (device/skin/render; subtle thin
+   archers most sensitive). PLUS musketeer is 12x over-represented (2336 vs 184) -> the humanoid-
+   ranged prototype skews musketeer, disadvantaging archers.
+2. FLIP-FLOP goblin<->spear-goblin frame-to-frame. Both detect well individually (R 0.855/0.874);
+   they're near-identical so the class boundary wobbles. FIX IS TEMPORAL (tracker class-debounce,
+   like the old unit_tracker CLASS_LOCK_HITS), NOT a better detector.
+
+ROADMAP FROM HERE (agreed w/ Duncan):
+1. Promote v3 to DEFAULT_MODEL (done next).
+2. Build a THIN tracker on the good detector: identity + CLASS DEBOUNCE (fixes flip-flop, stabilizes
+   archer/musketeer) + carry side-from-bar across frames. Replaces the heavy unit_tracker. HIGHEST
+   VALUE next build; no GPU.
+3. Archer data levers (retrain-level, after tracker): (a) REBALANCE -- cap musketeer's 2336 so it
+   stops dominating; (b) more of DUNCAN'S-emulator real data.
+4. Re-add play detection on stable tracks WITH a deliberate unit->card name mapping (detector emits
+   UNIT names archer/minion/goblin; card logic uses archers/minions/goblins).
+5. Phase 5 -- decision logic (rule-based first).
+
+DEBUG-VIEW FIXES (2026-09-09, from live --track test):
+1. FIXED-LAYOUT panel now mandatory (DEBUG_CONVENTIONS.md RULE 1 + memory feedback-debug-ui-fixed-
+   layout): each section (ENEMY/FRIENDLY/UNKNOWN/TOWERS/PLAYS) has a reserved y + fixed max rows;
+   empty rows stay blank so adding/removing a unit never shifts other info (was jittering unusably
+   when units flicker / a giant dies). detector_view game_panel rewritten to fixed slots.
+2. TOWER false-destroy fixed: pixel TowerStateTracker flagged a princess tower destroyed after one
+   hit while the detector still saw it + its bar. New detector_view.TowerPanel drives alive/destroyed
+   from the DETECTOR (tower/tower-bar detected near a slot center = alive; 'gone' only after 45 frames
+   absent); HP from tower_reader shown while alive. (DEBUG_CONVENTIONS RULE 2: detector > flaky pixel.)
+3. SIDE 'placement logic' fixed: relying only on bar colour left most (undamaged, no-bar) units
+   'unknown'. yolo_detector now adds a POSITION fallback -- unit centre above the river (RIVER_Y_TOP
+   650) = enemy, below (RIVER_Y_BOTTOM 711) = ally; bar colour stays authoritative, position fills the
+   unknowns. Far fewer 'unknown', matches placement reality.
+LEVEL number still TODO (column reserved in the panel).
+
+ARCHER CLUE (2026-09-09, Duncan, NOTED-not-fixed): ENEMY archers detect PERFECTLY, FRIENDLY archers
+don't. So it's not archers per se -- it's an ally/enemy ORIENTATION asymmetry (ally units face up
+from the bottom, enemy face down from top; KataCR's footage + our no-flip generator likely have
+mostly enemy-oriented archers). Likely fix later: horizontal/vertical flip augmentation or more ally
+archer examples. Duncan: note for now, revisit after seeing more decks (don't know yet if many cards
+share this). THIN TRACKER built (perception/thin_tracker.py): stable IDs + class debounce (fixes
+goblin<->spear-goblin flip-flop, verified) + sticky side + carries hp + logs simplified enemy plays.
+DETECTOR_VIEW enriched (--track): game-state panel -- units grouped ENEMY/FRIENDLY/UNKNOWN with hp%
+(from detected bars), 6-tower health (TowerStateTracker), simplified ENEMY PLAYS log. Run:
+python -m perception.detector_view --track. TODO: LEVEL NUMBER not shown yet -- detector finds the
+bar-level BADGE but reading the digit needs a small reader (reuse assets/level_badge_templates +
+label_level_badge infra); next small add.
+
+DATA DIRECTION (Duncan, 2026-09-09): the long-term training-data engine is SELF-PLAY. Once the bot
+plays (Phase 5), it KNOWS which card it played -> auto-labels its own plays with certainty (cleaner
+than TV Royale). So self-play self-labeling is the primary future data source; TV Royale auto-
+labeling is the FALLBACK if self-play data is insufficient. Both are contingent on the bot playing,
+so near-term the archer lever is REBALANCE; self-play data comes online with Phase 5.
+
+================================================================================
+>>> NEW SESSION START HERE — 2026-09-09 handoff <<<
+================================================================================
+Also read: TIMELINE.md, training/README.md, DEBUG_CONVENTIONS.md, and memory
+project_detector_direction (READ FIRST) + feedback-debug-ui-fixed-layout.
+
+WHERE THINGS STAND
+- DETECTOR: our own YOLOv8l, model cr_yolo_v3 (assets/models/cr_yolo_v3/best.pt), is the DEFAULT and
+  the current best (val mAP50 0.973). Trained on synthetic (KataCR sprites) + KataCR's ~6966 real
+  frames. Out-recalls stock KataCR; reads bars/level-badges/clocks natively; side from bar colour +
+  a river-position fallback. Wrapper: perception/yolo_detector.py.
+- EVALUATE with perception/detector_view.py -- the honest detector-only view:
+    python -m perception.detector_view --track   # game-state panel (units by side+hp, towers, plays)
+    [--model <path>] [--no-ui] [--conf 0.1] [--detector katacr|onnx] [--static]
+- THIN TRACKER (perception/thin_tracker.py) replaces the heavy unit_tracker: stable IDs + class
+  debounce (fixed goblin<->spear-goblin flip-flop) + sticky side + hp + simplified enemy-play log.
+- TRAINING: training/ (generate_dataset.py synthetic w/ components; prepare_real_data.py real;
+  finetune.py, supports --resume; combined data at training/datasets/cr_combined.yaml). v1/v2/v3
+  snapshots preserved in assets/models/.
+
+REDUCE PLAN (in progress): retiring the old compensation stack (side_reader, spawn_icon_reader,
+tower_reader hardcoded coords, heavy unit_tracker + opponent_play_tracker) now the detector supplies
+side/bars/clocks natively. detector_view.TowerPanel already drives tower alive/destroyed from the
+detector, not the flaky pixel tower_reader.
+
+IMMEDIATE NEXT (pick up here):
+1. Duncan to live-test detector_view --track (fixed-layout panel, tower no-false-destroy, side
+   position fallback). Confirm before building further.
+2. LEVEL NUMBER reader -- detector finds the bar-level badge; read the digit (reuse
+   assets/level_badge_templates + label_level_badge). Panel has a reserved column.
+3. Re-add PLAY DETECTION on stable tracks WITH a deliberate unit->card name mapping (detector emits
+   UNIT names archer/goblin/minion; card logic uses archers/goblins/minions). The thin tracker's
+   enemy-play log is a simplified stand-in for now.
+4. Phase 5 -- decision logic (rule-based first). Self-play then becomes the data engine.
+
+OPEN / PARKED:
+- FRIENDLY archers weak (enemy archers perfect) = ally/enemy ORIENTATION asymmetry in the data;
+  parked until more decks seen. Likely fix: flip augmentation / more ally examples.
+- Archer general lever: REBALANCE the 12x musketeer over-representation before a retrain.
+- Old debug_live.py still uses the heavy stack (phantom plays, discards YOLO clocks) -- superseded
+  by detector_view for evaluation; retire/rework later.
+
+================================================================================
+>>> LEVEL-NUMBER READER BUILT + WIRED (2026-09-09) <<<
+================================================================================
+Immediate-next item #2 from the handoff block. The detector already finds the
+team-coloured level badge as `bar-level`; this adds the digit read + display for
+BOTH sides. Built, wired, and unit-tested on the non-model path. NOT yet live-
+validated against real YOLO bar-level boxes (RULE #1) -- see OPEN below.
+
+WHAT WAS BUILT
+- perception/level_reader.py (NEW): the level-digit template library + matcher,
+  EXTRACTED from side_reader.py so it survives side_reader's planned retirement
+  (side_reader's colour-blob SEARCH is the compensation the YOLO detector
+  replaces; its digit library is still useful). side_reader.py now RE-EXPORTS
+  these names, so its own _verify_badge/_search and the label/review/auto_collect
+  tools import unchanged (verified: all compile + import, 1-4 templates load).
+  New API: read_level(screenshot, level_bbox) -> (value|None, conf) -- returns
+  None rather than GUESS a value it has no template for; queue_level_crop(...) for
+  RULE #2 collection.
+- bar_reader.associate_level_badges(units, level_dets): binds `bar-level` badges
+  to units, one-to-one greedy, SEPARATE from associate_bars so a unit can carry
+  BOTH its HP `bar` and its level badge (associate_bars lumps the classes and
+  would give a unit only one). Same geometry + overlapping-units safety.
+- yolo_detector.detect(): attaches u["level"] / u["level_bbox"] per unit. Game
+  asymmetry (per side_reader): ENEMY troops always show a badge; ALLY troops only
+  once DAMAGED -- so an ally's level reads None until it takes damage.
+- thin_tracker: sticky level (first real read wins, absence never clears it, a
+  different value only overrides after CLASS_LOCK_HITS frames -- a unit's level is
+  constant). as_dict carries "level".
+- detector_view: level shown as a fixed column (name | Lxx | hp) in the game
+  panel (RULE 1), plus "L#" on the arena box label and in the raw info panel.
+  NEW `--collect-levels`: banks each detected bar-level crop to
+  assets/unlabeled_level_queue/ (deduped, capped, throttled) for review -- does
+  NOT auto-file (RULE #2); label with `python -m perception.review_level_queue`.
+
+TESTED (offline, non-model): extraction imports clean; associate_level_badges
+binds a correctly-placed badge and rejects a far one; read_level returns the
+right digit at conf 1.0 on a real template; full render_frame runs both modes +
+collect without error. On the current test_screenshot.png there are NO troops/
+bar-levels, so real reading is UNtested.
+
+OPEN -- needs a live-match frame + Duncan (do BEFORE trusting any read, RULE #1):
+1. Confirm the YOLO `bar-level` box framing matches the existing 1-4 templates
+   well enough to read (those templates were cut by side_reader's blob search;
+   a YOLO box may frame slightly differently). If it under-matches, recollect
+   templates FROM YOLO boxes via --collect-levels and possibly clear the old 1-4.
+2. The library only has levels 1-4, so most REAL levels will read "L -" until
+   collected + labeled. Grow it: detector_view --track --collect-levels over a
+   match -> review_level_queue -> repeat.
+3. Show Duncan fresh-marked crops of what the reader binds/reads before asserting
+   any specific value (RULE #1).
+
+RUN: python -m perception.detector_view --track                 # see the L column
+     python -m perception.detector_view --track --collect-levels # + grow library
+
+LEVEL READER -- LIVE FEEDBACK #1 (2026-09-09, Duncan):
+(a) "hard to tell if the lvl is picked up -- it overlaps with name and health bar."
+(b) "it picked up lvls when the troop had a healthbar but NOT when there's no healthbar."
+
+FIX (a) -- DISPLAY: level was jammed into the end of the arena name label (top of
+the box, right where the game draws the name + health bar). Now drawn as its own
+distinct GOLD "LvN" plate pinned BELOW the unit box (detector_view._draw_level_tag),
+clear of the name plate (above) and the in-game bar/badge. Removed level from the
+name label. Panel keeps the fixed name|Lxx|hp column.
+
+FIX (b) -- ROOT CAUSE, found in CODE (no capture needed): training/generate_dataset.py
+attach_components() pasted `bar-level` ONLY nested under the `bar` branch, so in
+EVERY synthetic frame a level badge co-occurred with a health bar. The model never
+saw a LONE badge -- which is exactly the real UNDAMAGED-ENEMY case (an enemy always
+shows its red level badge; its health bar only appears once damaged). So v3 under-
+detects lone badges => undamaged-enemy levels don't read. Matches Duncan's report
+exactly. FIXED the generator: new LONE_LEVEL_PROB=0.25 pastes a badge with NO bar,
+positioned identically to the bar's left-end badge (a bar sprite is picked for
+geometry even when not drawn, so the model sees the badge in the same spot with/
+without a bar). Bands now bar+level 0.50 / lone-level 0.25 / clock 0.15 / none 0.10
+(statistically verified; lone badges never carry a bar).
+  ** REQUIRES A RETRAIN (v4) to take effect -- v3 is unchanged and still misses lone
+  badges live. Duncan's call (regenerate cr_synth + retrain, ~overnight on the 5080).
+  Until then the reader only picks up levels on units that also show a health bar
+  (damaged units) plus whatever lone badges v3 happens to catch. **
+  A capture with an undamaged enemy troop would let us MEASURE whether v3 emits the
+  lone bar-level box at all (conf) or drops it -- i.e. whether a conf/association
+  tweak helps v3 now or it strictly needs the retrain. Not yet done (RULE #1).
+
+LEVEL READER -- Lv? STATE + v4 RETRAIN LAUNCHED (2026-09-10):
+- "Lv?" DISPLAY added (Duncan's Q: will it miss levels we have no digit data for?).
+  Two SEPARATE mechanisms clarified: (1) DETECTING the badge = the model, ONE
+  `bar-level` class -> generalizes across ALL level numbers (v4 fixes the lone-
+  badge miss); (2) READING the digit = per-value template match (1-4 on file) ->
+  needs collection. New has_badge field flows detector->tracker->view: overlay now
+  shows "LvN" (read) / "Lv?" (badge detected, digit not collected yet) / nothing
+  (no badge). So after v4, enemies light up "Lv?" immediately (detection works),
+  fading to numbers as --collect-levels + review_level_queue fill the library
+  (bounded one-time job: ~17 values). yolo_detector sets level (read int|None) +
+  has_badge (bool); thin_tracker carries both (level sticky, has_badge per-frame);
+  detector_view._lvl(level,has_badge) + _draw_level_tag render the 3 states.
+- CONFIRMED on the real capture (temp_img/level_capture.png, Duncan verified via
+  temp_img/level_diag.png, RULE #1): the one troop was an ENEMY spear_goblin at
+  full health showing its red level badge, and v3 detected NO bar-level for it even
+  at conf 0.10 -- lone badge DROPPED entirely (not low-conf). So the retrain is
+  required; a conf/association tweak would not help v3. Side note: v3 mislabeled it
+  ally via the river-position fallback (an enemy that advanced to the bottom half);
+  once v4 detects the badge, its RED colour fixes the side too.
+- V4 PIPELINE LAUNCHED (background, training/train_v4.log): regen 4000 synthetic
+  (lone-badge fix) -> training/datasets/cr_synth_v3, then finetune
+  --data training/datasets/cr_combined_v4.yaml --name cr_finetune_v4 (cr_synth_v3 +
+  cr_real). NAMING: the dir cr_synth_v3 is the 3rd SYNTH gen (v1 cr_synth no comps,
+  v2 cr_synth_v2 comps, v3 cr_synth_v3 comps+lonebadge); it feeds MODEL v4. v3's
+  dataset (cr_synth_v2) + weights (assets/models/cr_yolo_v3) are untouched. Verified
+  the regen produces lone badges (bar-level/bar ratio 1.46 vs ~1.0 before).
+  Watch: Get-Content training\train_v4.log -Wait -Tail 30
+  After it finishes: snapshot runs/detect/cr_finetune_v4/weights/best.pt to
+  assets/models/cr_yolo_v4/, eval with detector_view --model, and if it wins flip
+  yolo_detector.DEFAULT_MODEL to v4. THEN the archer/musketeer rebalance can ride
+  the same retrain cycle.
+
+V4 TRAINED (2026-09-10, ~9.5h overnight, 100/100 epochs, exit 0). Snapshot preserved
+assets/models/cr_yolo_v4/best.pt (+cr_combined_v4.yaml). DEFAULT_MODEL still v3 --
+NOT promoted, pending LIVE validation on Duncan's emulator (synthetic val != live).
+Trained on cr_synth_v3 (4000 imgs, lone-badge fix) + cr_real.
+Val metrics: all mAP50 0.968 / R 0.944 (v3 was 0.973 / 0.953 -- marginally lower ONLY
+because the val is harder now: it includes the lone badges v4 must also find).
+The metric that matters: bar-level P 0.998 R 0.963 mAP50 0.984 over 2330 instances
+(val now ~25% lone badges) -> v4 LEARNED lone-badge detection on synthetic. No
+regression: archer R 0.87 (v3 0.86), goblin R 0.98, clock R 0.985, bar R 0.977.
+NEXT (live validation, gates promotion): re-run detector_view on a capture with an
+UNDAMAGED ENEMY -- v4 should now box its lone bar-level (was dropped by v3 at conf
+0.10). Test WITHOUT promoting:
+  python -m perception.detector_view --track --model assets/models/cr_yolo_v4/best.pt
+Look for: undamaged enemies now get a badge -> "Lv?" tag, and side reads enemy (red)
+instead of the river-position guess. If good live: flip yolo_detector.DEFAULT_MODEL
+to v4, then --collect-levels to fill digit templates. If not: diagnose the residual
+synthetic->real gap (same lever as archers -- more of Duncan's-emulator real data).
+
+V4 PROMOTED TO DEFAULT (2026-09-10). Duncan live-tested v4 in a practice game:
+levels "picking up well now" -> the lone-badge fix works LIVE (the gate). Flipped
+yolo_detector.DEFAULT_MODEL to assets/models/cr_yolo_v4/best.pt; v3 kept as prior.
+HONEST CAVEAT: on the ONE old static frame temp_img/level_capture.png (the earlier
+undamaged-enemy spear goblin), v4 STILL boxes no bar-level -- that specific badge is
+a hard/edge case, NOT representative of the live full-game behaviour Duncan confirmed.
+So not every badge is caught; --collect-levels + more real data keep improving it.
+LEVEL FEATURE now: badge detection works live (v4); digit READING still limited to
+templates 1-4 -> most levels show "Lv?" until collected. NEXT: run detector_view
+--collect-levels over a few games -> review_level_queue to fill 5-17, validate reads
+w/ Duncan (RULE #1), tune LEVEL_MATCH_THRESHOLD once real per-digit data exists.
+Then Duncan's Task 2: retire the old non-YOLO / crude compensation stack.
+
+V4 LIVE NOTES (2026-09-10, Duncan -- "don't think either is important, just noting"):
+1. Enemy goblin_hut: badge DETECTED but no level VALUE shown though "a known level".
+   Likely EXPECTED, not a bug: digit templates exist only for 1-4, so any other value
+   correctly shows "Lv?" (badge seen, digit uncollected). Closed by --collect-levels.
+   ONLY a real miss if the value was actually 1-4 -- check when collecting.
+2. Ally Giant classified friendly at spawn, then FLIPPED to enemy after crossing the
+   bridge. Root cause = the crude river-position side fallback (yolo_detector
+   RIVER_Y_TOP): an undamaged ally shows no bar + (as ally) no badge -> no colour
+   signal -> position says "top half = enemy", so crossing the river flips it. Sticky
+   side in thin_tracker can't hold because position feeds a SUSTAINED wrong "enemy"
+   every frame (outlasts CLASS_LOCK_HITS). This is a prime TASK-2 target: position
+   should only SEED a new track's side, never OVERRIDE an established track that is
+   merely moving across the map. (Mirror of the earlier enemy-crossing-to-bottom case.)
+
+================================================================================
+>>> TASK 2 -- RETIRED THE OLD COMPENSATION STACK (2026-09-10) <<<
+================================================================================
+Duncan's Task 2: remove old logic that doesn't rely on the YOLO system, or crude
+logic that could make the system stupid downstream. Done now that v4 is the
+confirmed-better detector (removing the safety net against a detector we trust).
+
+DELETED (18 files) -- all old-weak-detector compensation or superseded:
+  perception/: unit_detector.py (units.onnx wrapper), katacr_detector.py (interim
+    detector), side_reader.py (colour-blob badge search; its digit library already
+    lives in level_reader.py), spawn_icon_reader.py (superseded by YOLO `clock`),
+    unit_tracker.py (heavy tracker -> thin_tracker.py), auto_collect.py +
+    label_level_badge.py + review_spawn_icon_queue.py (old collection tools),
+    debug_live.py (ran the whole old stack), frame_diff.py, test_unit_tracker.py,
+    test_frame_diff.py.
+  game_knowledge/: opponent_play_tracker.py (old-model play heuristics),
+    compare_ground_truth.py, spawn_data.py, test_opponent_play_tracker.py.
+  data/: auto_labeler.py, test_auto_labeler.py (TV Royale auto-label FALLBACK --
+    coupled to the old tracker/detector; self-play is the primary data plan, so
+    this gets rewritten against the new detector if/when TVR data is needed).
+
+REDUCED / FIXED (kept modules, severed from the deleted ones):
+  - bar_reader.py: inlined NON_UNIT_CLASSES (was imported from katacr_detector);
+    __main__ demo rewritten to use YoloDetector.
+  - detector_view.py: make_detector is YOLO-ONLY; dropped --detector katacr|onnx
+    (and thus the two legacy detector imports).
+  - review_level_queue.py: imports LEVEL_* / add_level_example from level_reader
+    (was side_reader).
+  - thin_tracker.py: SEED-ONLY side (note #2 fix). The crude river-position side
+    guess now only SEEDS a new track's side; it can NO LONGER flip an established
+    track (an ally Giant crossing the bridge stayed enemy before). Only an
+    authoritative BAR-COLOUR reading flips an established side. Unit-tested.
+
+KEPT (legitimate, not compensation): yolo_detector, thin_tracker, bar_reader,
+  level_reader, detector_view (live path); card_detector, elixir_counter, capture,
+  actions, overlay; tower_reader (HP-fill reader; its destroyed-detection is
+  already superseded by detector_view.TowerPanel); game_knowledge/cycle_tracker +
+  zone_classifier; the TV Royale stack (tv_royale_*, tv_royale_watcher).
+
+ORPHANED-BUT-KEPT (curated game-knowledge DATA, not logic; needed for Phase 5):
+  perception/unit_metadata.py (TRANSPORT air/ground + TARGET_TYPE) -- its old
+  consumers (unit_detector/unit_tracker) are gone; keep for the rule-based bot.
+  Same spirit: zone_classifier if it ends up unused until Phase 5.
+
+VERIFIED: no remaining import of any deleted module; all remaining py compiles;
+live path imports + renders (detector_view render_frame OK, v4 default); kept
+tests pass (test_tower_reader 12/12, test_zone_classifier 7/7).
+
+STILL OPEN (future, not this task): re-add play detection on stable tracks with a
+unit->card name mapping (the thin_tracker enemy-play log is the simplified stand-in);
+fill the level-digit library (--collect-levels); Phase 5 decision logic.

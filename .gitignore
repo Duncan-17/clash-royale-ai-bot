@@ -10,3 +10,11 @@ data/unit_training/
 # Third-party detector weights (~88MB each) — downloadable, not ours to vendor.
 # See perception/katacr_detector.py docstring for the source links.
 assets/models/katacr/
+
+# YOLO training: ultralytics run outputs, downloaded/generated datasets, weights.
+runs/
+datasets/
+training/runs/
+training/datasets/
+training/data/
+*.pt

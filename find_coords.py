@@ -9,20 +9,28 @@ the original image's real pixel positions — the same coordinate space
 tap()/swipe() expect.
 
 Usage:
-    python find_coords.py
+    python find_coords.py                          # uses test_screenshot.png
+    python find_coords.py temp_img/tvr_01_menu.png # any captured screen
 Then click on the image window that opens. Press any key to close it.
+
+Clicking prints REAL image coordinates (translated back from the scaled
+display) — the same space EmulatorController.tap() expects, so a click on a
+menu button here gives the tap coordinate directly.
 """
+
+import sys
 
 import cv2
 
 MAX_DISPLAY_HEIGHT = 900  # keep the window comfortably on-screen
 
-image = cv2.imread("test_screenshot.png")
+image_path = sys.argv[1] if len(sys.argv) > 1 else "test_screenshot.png"
+image = cv2.imread(image_path)
 
 if image is None:
     raise FileNotFoundError(
-        "test_screenshot.png not found — run test_connection.py or "
-        "`python -m perception.capture` first to generate it."
+        f"{image_path} not found — capture it first "
+        f"(e.g. `python -m perception.grab_screen {image_path}`)."
     )
 
 original_h, original_w = image.shape[:2]

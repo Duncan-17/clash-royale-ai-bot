@@ -1,9 +1,18 @@
-> **STATUS 2026-08-20 — read Project_Status first.** Phases 1-3 (capture, control,
-> perception) are done. The unit detector is now KataCR's YOLOv8 pair (open weights,
-> trainable) — settled after live testing, not an experiment. **The active workstream
-> is TV Royale data collection**, so that detector can be fine-tuned on our own
-> footage; it is the fix for every remaining detection issue. Phase 4 (game knowledge)
-> is partly built. Phases 5+ (decision-making) are untouched.
+> **STATUS 2026-09-08 — read Project_Status + TIMELINE.md first.** Phases 1-3 (capture,
+> control, perception) done. **We now TRAIN OUR OWN detector**: a standard Ultralytics
+> YOLOv8l fine-tuned on KataCR's data (RTX 5080) — models v1 (synthetic) → v2 (+detects
+> HP bars/level badges/clocks; side from bar colour) → v3 (synthetic + KataCR's ~6,966
+> real frames). Live-tested: out-recalls KataCR, reads side/spawn/level natively. See
+> `training/`, `perception/yolo_detector.py`, `perception/detector_view.py`. **Active
+> workstream: REDUCE** the old compensation stack (side_reader / spawn_icon_reader /
+> tower_reader hardcoded coords / heavy unit_tracker + opponent_play_tracker heuristics —
+> all built to survive the weak old detector) now the new detector supplies those natively,
+> then rebuild a thin tracker (class debounce fixes the goblin↔spear-goblin flip-flop).
+> v3 is DONE + best (val mAP50 0.973, "so much better" live) and being promoted to default.
+> Residual: archers weak LIVE (KataCR-real vs Duncan's-emulator gap + a 12× musketeer over-
+> representation → rebalance). The long-term training-data engine is SELF-PLAY (once the bot
+> plays it knows its own plays → auto-labels with certainty); TV Royale auto-labeling is the
+> fallback (sparse: one unit/play). Phase 4 partly built; Phases 5+ (decision-making) untouched.
 
 # Clash Royale AI Bot — Master Roadmap & Resource Guide
 

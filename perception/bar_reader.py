@@ -67,6 +67,19 @@ MAX_BOTTOM_OFFSET_PX = 25   # positive = bar overlaps slightly into the unit box
 
 BAR_CLASSES = ("bar", "bar-level")
 
+# Non-unit detector classes (UI/components/towers) -- everything that is NOT a
+# troop/building the tracker should see. Inlined here 2026-09-10 when the legacy
+# katacr_detector.py was retired (Task 2); this used to import that module's
+# NON_UNIT_CLASSES. bar/bar-level are handled separately (BAR_CLASSES) since we
+# READ them for side/hp, so they're not in this "ignore" set's job here.
+NON_UNIT_CLASSES = {
+    "king-tower", "queen-tower", "cannoneer-tower", "dagger-duchess-tower",
+    "dagger-duchess-tower-bar", "tower-bar", "king-tower-bar", "bar",
+    "bar-level", "clock", "emote", "text", "elixir", "selected",
+    "skeleton-king-bar", "evolution-symbol", "ice-spirit-evolution-symbol",
+    "padding_belong",
+}
+
 # Measured 2026-08-20 from assets/tower_reader_calibration/unit_bars_both_giants.png --
 # a real capture with an ally Giant at ~92% and an enemy Giant at ~84%. See module
 # docstring for why a NOT-full bar is the only capture that can produce a correct EMPTY
@@ -137,7 +150,7 @@ def _association_score(bar_bbox, unit_bbox):
 
 
 def associate_bars(detections: list) -> dict:
-    """Given one frame's detections from perception.katacr_detector.KataCRDetector
+    """Given one frame's detections from perception.yolo_detector.YoloDetector
     (run with include_non_units=True so bars are present), returns
     {unit_index: bar_detection} for every unit a bar could be confidently matched
     to. Indices are positions in `detections`.
@@ -169,9 +182,57 @@ def associate_bars(detections: list) -> dict:
     return out
 
 
+def associate_level_badges(units: list, level_dets: list) -> dict:
+    """Bind detected `bar-level` badges to units, one-to-one greedy by best score
+    (same geometry + overlapping-units safety as associate_bars). Returns
+    {unit_index: level_det}, indices into `units`.
+
+    Separate from associate_bars deliberately: a unit can carry BOTH its wide
+    health `bar` (for HP + side) AND its small `bar-level` badge (for the level
+    digit), but associate_bars lumps the two classes into one pool and one-to-one
+    matching would hand a unit only one of them. This associates the level badges
+    on their own so the level read is independent of the HP read. `units` are unit
+    detections (each with a `bbox`); `level_dets` are the raw `bar-level` dets."""
+    scored = []
+    for li, ld in enumerate(level_dets):
+        for ui, u in enumerate(units):
+            s = _association_score(ld["bbox"], u["bbox"])
+            if s is not None:
+                scored.append((s, li, ui))
+    scored.sort(key=lambda t: t[0])
+
+    used_l, used_u, out = set(), set(), {}
+    for _s, li, ui in scored:
+        if li in used_l or ui in used_u:
+            continue
+        used_l.add(li)
+        used_u.add(ui)
+        out[ui] = level_dets[li]
+    return out
+
+
 def _is_non_unit(det: dict) -> bool:
-    from perception.katacr_detector import NON_UNIT_CLASSES
     return det.get("raw_name") in NON_UNIT_CLASSES
+
+
+def side_from_bar_color(screenshot, bbox):
+    """Ally vs enemy from a bar/bar-level box's COLOUR (blue=ally, red=enemy).
+    For detectors WITHOUT a belonging channel (our fine-tuned YOLOv8, which
+    detects the bar as an object but not its team). Counts pixels closer to each
+    team's filled bar colour; returns 'ally', 'enemy', or None if the box has no
+    clean bar-coloured pixels. Same reference colours read_bar_fill uses."""
+    import numpy as np
+    x1, y1, x2, y2 = bbox
+    region = screenshot[max(0, y1):y2, max(0, x1):x2].reshape(-1, 3).astype(float)
+    if region.size == 0:
+        return None
+    d_ally = np.linalg.norm(region - np.array(UNIT_BAR_FILLED_BGR["ally"]), axis=1)
+    d_enemy = np.linalg.norm(region - np.array(UNIT_BAR_FILLED_BGR["enemy"]), axis=1)
+    ally = int(((d_ally < d_enemy) & (d_ally < BAR_CLEAN_MAX_DIST)).sum())
+    enemy = int(((d_enemy < d_ally) & (d_enemy < BAR_CLEAN_MAX_DIST)).sum())
+    if ally == 0 and enemy == 0:
+        return None
+    return "ally" if ally >= enemy else "enemy"
 
 
 def apply_bar_sides(detections: list, screenshot=None) -> list:
@@ -208,31 +269,21 @@ def apply_bar_sides(detections: list, screenshot=None) -> list:
 
 
 if __name__ == "__main__":
-    import glob
+    import sys
 
     import cv2
 
-    from perception.katacr_detector import KataCRDetector
+    from perception.yolo_detector import YoloDetector
 
-    det = KataCRDetector(include_non_units=True)
-    frames = sorted(glob.glob("temp_img/side_conflicts/*.png"))[-14:]
-    agree = disagree = unassoc = 0
-    print("bar-vs-unit side, per associated pair (disagreements are the interesting ones --")
-    print("the bar is the more trustworthy of the two, see module docstring):\n")
-    for p in frames:
-        dets = det.detect(cv2.imread(p))
-        assoc = associate_bars(dets)
-        for ui, bar in assoc.items():
-            u = dets[ui]
-            same = u["side"] == bar["side"]
-            agree, disagree = (agree + 1, disagree) if same else (agree, disagree + 1)
-            if not same:
-                print(f"  {p.split(chr(92))[-1][-18:]}  {u['name']:16s} "
-                      f"unit={u['side']:6s} bar={bar['side']:6s} ({bar['raw_name']})")
-        unassoc += sum(1 for i, d in enumerate(dets)
-                       if d.get("raw_name") not in BAR_CLASSES and not _is_non_unit(d)
-                       and i not in assoc)
-    total = agree + disagree
-    print(f"\nassociated pairs: {total}  agree: {agree}  disagree: {disagree}"
-          f"  ({agree / total * 100:.0f}% agreement)" if total else "\nno pairs")
-    print(f"units with NO bar (expected -- undamaged ally troops show none): {unassoc}")
+    path = sys.argv[1] if len(sys.argv) > 1 else "test_screenshot.png"
+    img = cv2.imread(path)
+    if img is None:
+        raise FileNotFoundError(f"{path} not found.")
+    # YoloDetector already runs apply_bar_sides internally, so its units carry the
+    # associated bar's side + hp_fraction. Print them to eyeball the association.
+    units = [d for d in YoloDetector(include_non_units=False).detect(img)]
+    print(f"{len(units)} units on {path} (side / side_source / hp / level):")
+    for u in sorted(units, key=lambda d: -d["confidence"]):
+        hp = "" if u.get("hp_fraction") is None else f"{u['hp_fraction']*100:.0f}%"
+        print(f"  {u['name']:16s} {u.get('side','?'):7s} {u.get('side_source','?'):8s} "
+              f"{hp:>5s}  lvl={u.get('level')}  bbox={u['bbox']}")

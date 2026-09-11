@@ -24,6 +24,7 @@ Reads test_screenshot.png, prints the best-guess card name + confidence
 for each of the 4 hand slots.
 """
 
+import difflib
 import os
 import time
 
@@ -33,6 +34,18 @@ import numpy as np
 from config.hand_region import hand_slot_regions
 
 TEMPLATE_DIR = "assets/hand_templates"
+CARD_ICON_DIR = "assets/card_icons"  # authoritative card-name source (the downloaded sprites)
+
+# The downloaded sprite filenames spell a couple of cards awkwardly; we
+# standardize on the readable slugs everywhere (folders, decks, list reads,
+# queue labels). Apply canonical_slug() wherever a card_icons FILENAME becomes
+# a card slug so the ugly spelling never leaks out. (2026-09-07: unified the
+# mini_pekka/mini_p_e_k_k_a and p_e_k_k_a/pekka split onto the readable names.)
+ICON_NAME_ALIASES = {"p_e_k_k_a": "pekka", "mini_p_e_k_k_a": "mini_pekka"}
+
+
+def canonical_slug(name: str) -> str:
+    return ICON_NAME_ALIASES.get(name, name)
 MATCH_SIZE = (64, 64)  # both crop and every example get resized to this before comparing.
 # Lowered from (128,128) on 2026-08-15 once capture stopped being the bottleneck (see
 # perception/capture.py) and card matching itself became the dominant per-frame cost
@@ -103,16 +116,33 @@ def best_match(crop: np.ndarray, templates: dict):
     return best_name, best_score
 
 
-def identify_hand(screenshot: np.ndarray, templates: dict) -> list:
+def identify_hand(screenshot: np.ndarray, templates: dict, regions=None,
+                  min_confidence: float = CONFIDENCE_THRESHOLD) -> list:
     """
-    Returns a list of (card_name, confidence) for each of the 4 hand slots.
-    card_name is "UNKNOWN" when the best match falls below CONFIDENCE_THRESHOLD.
+    Returns a list of (card_name, confidence) for each hand slot.
+    card_name is "UNKNOWN" when the best match falls below min_confidence.
+
+    `regions` defaults to the live single-player hand (config.hand_region).
+    Pass explicit (x1,y1,x2,y2) boxes to read a different layout — e.g. the
+    TV Royale spectator view has two hands (config.tv_royale_regions'
+    enemy_hand_slots()/friendly_hand_slots()), read by calling this once per
+    player. Note: a SELECTED card is shifted out of its resting box (see
+    config.tv_royale_regions.SELECTED_SHIFT_Y), so the mid-play slot may read
+    UNKNOWN at rest — the caller handles that transient, not this function.
+
+    `min_confidence` defaults to CONFIDENCE_THRESHOLD (tuned for the live
+    library's 40 real examples per card). The TV Royale path matches against
+    weak catalog SEEDS restricted to the 16 known deck cards
+    (config.tv_royale_decks), where the best-of-16 argmax is meaningful well
+    below 0.85 — pass a lower threshold there. Tune against real footage.
     """
+    if regions is None:
+        regions = hand_slot_regions()
     results = []
-    for (x1, y1, x2, y2) in hand_slot_regions():
+    for (x1, y1, x2, y2) in regions:
         crop = screenshot[y1:y2, x1:x2]
         name, score = best_match(crop, templates)
-        if score < CONFIDENCE_THRESHOLD:
+        if score < min_confidence:
             name = "UNKNOWN"
         results.append((name, score))
     return results
@@ -160,6 +190,42 @@ def add_example(name: str, crop: np.ndarray):
     out_path = os.path.join(card_dir, f"{int(time.time() * 1000)}.png")
     cv2.imwrite(out_path, gray_full)
     return out_path
+
+
+def known_card_slugs():
+    """The canonical set of valid card folder names: the authoritative
+    assets/card_icons/ sprite names, UNION any assets/hand_templates/ folder
+    that already holds REAL examples (a card you've genuinely trained). A
+    brand-new typo (e.g. "minni_pekka") is in neither, so resolve_card_name()
+    can reject it before it becomes a folder — this is what prevents the
+    misspelled-library problem (a real bug: 'minni_pekka' got created and
+    silently orphaned examples + polluted match guesses, fixed 2026-09-07)."""
+    slugs = set()
+    if os.path.isdir(CARD_ICON_DIR):
+        slugs |= {canonical_slug(f[:-4]) for f in os.listdir(CARD_ICON_DIR) if f.endswith(".png")}
+    if os.path.isdir(TEMPLATE_DIR):
+        for d in os.listdir(TEMPLATE_DIR):
+            path = os.path.join(TEMPLATE_DIR, d)
+            if os.path.isdir(path) and any(
+                f.endswith(".png") and f != "catalog_seed.png" for f in os.listdir(path)
+            ):
+                slugs.add(d)
+    return slugs
+
+
+def resolve_card_name(typed, known=None):
+    """Map a human-typed card name to a canonical slug, or refuse it.
+    Returns (slug, suggestions): slug is a valid known name to file under, or
+    None with up to 3 close suggestions when the input isn't a known card.
+    Light normalization only (case, spaces/hyphens -> underscores); the point
+    is to REJECT unknowns, not to invent new folders."""
+    if known is None:
+        known = known_card_slugs()
+    key = typed.strip().lower().replace(" ", "_").replace("-", "_").replace(".", "")
+    key = canonical_slug(key)  # fold the awkward card_icons spellings (mini_p_e_k_k_a -> mini_pekka)
+    if key in known:
+        return key, []
+    return None, difflib.get_close_matches(key, sorted(known), n=3, cutoff=0.5)
 
 
 if __name__ == "__main__":
