@@ -18,3 +18,4 @@ training/runs/
 training/datasets/
 training/data/
 *.pt
+training/*.log

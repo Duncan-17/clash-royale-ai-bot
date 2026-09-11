@@ -57,13 +57,20 @@ def _to_our_name(name: str) -> str:
 
 class YoloDetector:
     def __init__(self, model_path=DEFAULT_MODEL, conf=DEFAULT_CONF, imgsz=DEFAULT_IMGSZ,
-                 include_non_units=False):
+                 include_non_units=False, read_levels=False):
         from ultralytics import YOLO
         import torch
         self.model = YOLO(model_path)
         self.conf = conf
         self.imgsz = imgsz
         self.include_non_units = include_non_units
+        # read_levels: run the level-DIGIT template match (level_reader.read_level)
+        # per badge. OFF by default -- it's ~0.9ms/badge x every badge x every
+        # frame (~15ms on a busy frame) re-reading a level that never changes, and
+        # was a big source of the live-view lag (Duncan 2026-09-10). Badge
+        # DETECTION is always on (cheap) so units still show "Lv?"; turn this on
+        # (detector_view --read-levels) only when you actually want the numbers.
+        self.read_levels = read_levels
         self.device = 0 if torch.cuda.is_available() else "cpu"
         # Non-unit UI classes (mirror katacr_detector's split) -- filtered out
         # unless include_non_units, so unit_tracker/opponent_play_tracker only
@@ -160,10 +167,11 @@ class YoloDetector:
         level_dets = [d for d in dets if d.get("raw_name") == "bar-level"]
         if level_dets:
             for ui, ld in associate_level_badges(units, level_dets).items():
-                value, _conf = read_level(screenshot, ld["bbox"])
                 units[ui]["level_bbox"] = ld["bbox"]
-                units[ui]["has_badge"] = True
-                units[ui]["level"] = int(value) if value is not None else None
+                units[ui]["has_badge"] = True          # cheap: badge detected -> "Lv?"
+                if self.read_levels:                   # the expensive part, opt-in
+                    value, _conf = read_level(screenshot, ld["bbox"])
+                    units[ui]["level"] = int(value) if value is not None else None
 
         if self.include_non_units:
             # keep the raw component/UI detections too (clocks, bars, towers)

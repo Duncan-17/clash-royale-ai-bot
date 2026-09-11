@@ -21,9 +21,6 @@ zone-based side inference, spawn-icon seeding, class hallucination accumulators.
 Add back only if a real need shows up against the new detector.
 """
 
-import time
-from collections import deque
-
 IOU_MATCH = 0.2        # min IoU to bind a detection to an existing track
 MAX_MISSED = 8         # drop a track after this many frames unseen (~0.3s at 30fps)
 CLASS_LOCK_HITS = 3    # consecutive frames a NEW class/side must persist to take over
@@ -45,7 +42,7 @@ def _iou(a, b):
 
 class _Track:
     __slots__ = ("id", "bbox", "conf", "cls", "side", "hp", "level", "has_badge",
-                 "age", "missed", "logged_play", "_pend_cls", "_pend_cls_n",
+                 "age", "missed", "_pend_cls", "_pend_cls_n",
                  "_pend_side", "_pend_side_n", "_pend_lvl", "_pend_lvl_n")
 
     def __init__(self, tid, det):
@@ -59,7 +56,6 @@ class _Track:
         self.has_badge = det.get("has_badge", False)  # per-frame: is a badge visible now
         self.age = 1
         self.missed = 0
-        self.logged_play = False               # enemy-play logged once per track
         self._pend_cls, self._pend_cls_n = det["name"], 1
         self._pend_side, self._pend_side_n = self.side, 1
         self._pend_lvl, self._pend_lvl_n = self.level, 1
@@ -143,10 +139,9 @@ class ThinTracker:
         self.max_missed = max_missed
         self._tracks = []
         self._next_id = 0
-        # SIMPLIFIED enemy plays: a (time, card) each time a track first becomes
-        # enemy -- a lightweight stand-in for the real cycle-based play detector
-        # (a new enemy unit ~ a play). Once per track, so it doesn't re-log.
-        self.plays = deque(maxlen=12)
+        # Play detection lives in game_knowledge/play_tracker.py now (own-play
+        # ground truth + opponent-play attribution), layered on top of these
+        # tracks -- this stays pure tracking (IDs, class, side, level, hp).
 
     def update(self, detections):
         """detections: unit dicts from yolo_detector (name, side, bbox, confidence).
@@ -176,12 +171,4 @@ class ThinTracker:
                 self._next_id += 1
 
         self._tracks = [t for t in self._tracks if t.missed <= self.max_missed]
-
-        # Log a simplified enemy play when a track is first confirmed enemy.
-        now = time.time()
-        for t in self._tracks:
-            if t.side == "enemy" and not t.logged_play:
-                t.logged_play = True
-                self.plays.append((now, t.cls))
-
         return [t.as_dict() for t in self._tracks if t.missed == 0]

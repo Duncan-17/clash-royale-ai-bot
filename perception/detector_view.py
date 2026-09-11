@@ -1,25 +1,32 @@
-"""Raw detector view -- the detector's OWN output and nothing else.
+"""The live/eval view for OUR detector -- the honest picture of what the detector
+sees, plus the THIN stack we actually keep (no old compensation heuristics).
 
-Deliberately strips the whole logic stack (unit_tracker, opponent_play_tracker,
-find_spawn_icon, side_reader, cycle/tower trackers) that perception/debug_live.py
-layers on. That stack was built to survive a weak detector and now fights the
-new one -- it's the source of the phantom opponent plays and the "spawn logic
-not applying" (debug_live discards YOLO's clock detections and runs the old
-pixel search instead). This view answers one question cleanly: what does the
-DETECTOR actually see, frame by frame?
+Default: raw detections only (units + bars/levels/clocks/towers), coloured by side
+(ally=blue / enemy=red from bar colour + a river-position seed, unknown=amber),
+components in cyan -- the clean way to judge a model.
 
-Draws every detection (units + bars/levels/clocks/towers), colored by side
-(ally=blue / enemy=red from the bar colour, unknown=amber), components in cyan.
-No tracking, no play attribution, no pixel heuristics.
+--track layers on the RELIABLE, cheap thin stack: perception/thin_tracker.py
+(stable IDs, class debounce, sticky side/level, HP) + tower alive/HP from the
+detector. The game panel shows units by side (+level+HP) and tower health.
+
+Deliberately OFF by default (opt-in), because on noisy detections they either lie
+or cost too much (Duncan 2026-09-10):
+    --plays        opponent-play detection (game_knowledge/play_tracker.py). It
+                   manufactures plays that didn't happen when detections flicker.
+                   The own-play ground-truth framework is unaffected (needs the bot).
+    --read-levels  level-DIGIT reading (numbers vs "Lv?"): template-matches every
+                   badge every frame (~15ms busy), and levels are on standby.
 
 Usage:
-    python -m perception.detector_view                 # LIVE (our YOLO detector)
-    python -m perception.detector_view --track         # + thin tracker + game panel
+    python -m perception.detector_view                 # LIVE, raw detector output
+    python -m perception.detector_view --track         # + thin tracker + tower/game panel
+    python -m perception.detector_view --track --profile   # per-stage ms every 30 frames
     python -m perception.detector_view --static        # one frame from test_screenshot.png
     python -m perception.detector_view --model assets/models/cr_yolo_v3/best.pt  # a specific model
 """
 
 import argparse
+import time
 
 import cv2
 import numpy as np
@@ -88,12 +95,12 @@ def track(dets, tracker):
     return tracker.update(units) + comps
 
 
-def make_detector(conf, model_path=None):
+def make_detector(conf, model_path=None, read_levels=False):
     # yolo-only since Task 2 (2026-09-10): the katacr / units.onnx comparison
     # detectors were retired once v4 was settled as the detector.
     from perception.yolo_detector import YoloDetector, DEFAULT_MODEL
     return YoloDetector(model_path=model_path or DEFAULT_MODEL,
-                        include_non_units=True, conf=conf)
+                        include_non_units=True, conf=conf, read_levels=read_levels)
 
 
 PANEL_W = 360
@@ -282,24 +289,52 @@ def _collect_levels(frame, comps):
     return _collect_state["n"]
 
 
+_prof = {"n": 0, "capture": 0.0, "detect": 0.0, "track": 0.0, "plays": 0.0, "towers": 0.0, "draw": 0.0}
+_PROF_KEYS = ("capture", "detect", "track", "plays", "towers", "draw")
+
+
+def _lap(on, key, t0):
+    if on:
+        _prof[key] += time.perf_counter() - t0
+    return time.perf_counter()
+
+
 def render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel=None,
-                 collect_levels=False):
+                 collect_levels=False, play_tracker=None, profile=False):
+    t = time.perf_counter()
     raw = ui_filter(det.detect(frame))
+    t = _lap(profile, "detect", t)
     comps = [d for d in raw if _is_component(d)]
     units = [d for d in raw if not _is_component(d)]
     banked = _collect_levels(frame, comps) if collect_levels else None
     if tracker is not None:
         tracked = tracker.update(units)
-        annotated = annotate(frame, tracked + comps)
+        t = _lap(profile, "track", t)
+        plays = []
+        if play_tracker is not None:
+            play_tracker.update(tracked)  # overlays own-play side + logs opponent plays
+            plays = [(e.t, e.card) for e in play_tracker.opponent_plays]
+        t = _lap(profile, "plays", t)
         tower_hp = tower_tracker.update(frame) if tower_tracker is not None else {}
         tower_info = tower_panel.update(comps, tower_hp) if tower_panel is not None else {}
-        panel = game_panel(tracked, tower_info, tracker.plays, annotated.shape[0])
+        t = _lap(profile, "towers", t)
+        annotated = annotate(frame, tracked + comps)
+        panel = game_panel(tracked, tower_info, plays, annotated.shape[0])
     else:
         annotated = annotate(frame, raw)
         panel = info_panel(raw, annotated.shape[0])
+    t = _lap(profile, "draw", t)
     if banked is not None:
         cv2.putText(annotated, f"lvl-collect queued:{banked}", (10, annotated.shape[0] - 12),
                     cv2.FONT_HERSHEY_DUPLEX, 0.6, (80, 220, 80), 1, cv2.LINE_AA)
+    if profile:
+        _prof["n"] += 1
+        if _prof["n"] >= 30:
+            n = _prof["n"]
+            print("profile ms/frame:  " + "   ".join(
+                f"{k}={_prof[k] / n * 1000:5.1f}" for k in _PROF_KEYS))
+            for k in _prof:
+                _prof[k] = 0.0
     return np.hstack([panel, annotated])
 
 
@@ -322,21 +357,35 @@ def main():
     p.add_argument("--track", action="store_true",
                    help="Stabilize units through the ThinTracker (class debounce, sticky side, IDs) "
                         "-- shows the flip-flop fixed.")
+    p.add_argument("--plays", action="store_true",
+                   help="OPT-IN opponent-play detection (game_knowledge.play_tracker). OFF by "
+                        "default: on noisy detections it manufactures plays that didn't happen "
+                        "(Duncan 2026-09-10). The own-play framework is unaffected (needs the bot).")
+    p.add_argument("--read-levels", action="store_true",
+                   help="OPT-IN level-DIGIT reading (numbers instead of 'Lv?'). OFF by default: "
+                        "it template-matches every badge every frame (~15ms on a busy frame) and "
+                        "levels are on standby anyway. Badge detection ('Lv?') is always on.")
     p.add_argument("--collect-levels", action="store_true",
                    help="Bank each detected level badge (bar-level) crop to "
                         "assets/unlabeled_level_queue/ for review (RULE #2). Grows the "
                         "digit library so more levels read; label with review_level_queue.")
+    p.add_argument("--profile", action="store_true",
+                   help="Print per-stage timings (detect/track/plays/towers/draw) every 30 frames "
+                        "to find where time goes.")
     args = p.parse_args()
 
-    det = make_detector(args.conf, args.model)
+    det = make_detector(args.conf, args.model, args.read_levels)
     ui_filter = filter_ui if args.no_ui else (lambda d: d)
-    tracker = tower_tracker = tower_panel = None
+    tracker = tower_tracker = tower_panel = play_tracker = None
     if args.track:
         from perception.thin_tracker import ThinTracker
         from perception.tower_reader import TowerStateTracker
         tracker = ThinTracker()
         tower_tracker = TowerStateTracker()
         tower_panel = TowerPanel()
+        if args.plays:  # opt-in; off by default so noisy detections don't fake plays
+            from game_knowledge.play_tracker import PlayTracker
+            play_tracker = PlayTracker()
     window = f"Detector view: yolo{' +track' if args.track else ''} (q=quit)"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
 
@@ -344,7 +393,7 @@ def main():
         frame = cv2.imread("test_screenshot.png")
         if frame is None:
             raise FileNotFoundError("test_screenshot.png not found.")
-        cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels)))
+        cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile)))
         print("Static frame — press any key in the window to close.")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -356,8 +405,11 @@ def main():
     capture = ScreenCapture(EmulatorController())
     try:
         while True:
+            _t = time.perf_counter()
             frame = capture.screenshot()
-            cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels)))
+            if args.profile:
+                _prof["capture"] += time.perf_counter() - _t
+            cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile)))
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
     finally:

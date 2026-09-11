@@ -1499,3 +1499,99 @@ tests pass (test_tower_reader 12/12, test_zone_classifier 7/7).
 STILL OPEN (future, not this task): re-add play detection on stable tracks with a
 unit->card name mapping (the thin_tracker enemy-play log is the simplified stand-in);
 fill the level-digit library (--collect-levels); Phase 5 decision logic.
+
+LEVEL-DIGIT COLLECTION ON STANDBY (2026-09-10, Duncan). Filling the level-digit
+template library (--collect-levels -> review_level_queue, currently only 1-4) is
+PARKED -- it doesn't matter until the bot is winning games and seeing new levels
+consistently. Badge DETECTION already works (v4) and drives side/HP/ID, which is
+what gameplay needs; un-collected levels just render "Lv?", which is fine. The
+tool stays in place, unused, until then. Do NOT spend time collecting digits now;
+active next work is play detection (unit->card mapping) and Phase 5 decision logic.
+
+================================================================================
+>>> PLAY-DETECTION FRAMEWORK (2026-09-10) <<<
+================================================================================
+Duncan's insight: when the BOT plays its own cards it always KNOWS what's friendly
+(it played it) and thereby what's enemy. Built the framework around that.
+
+game_knowledge/play_tracker.py (NEW) -- PlayTracker, layered on thin_tracker:
+  - record_own_play(card, position) -- the bot's action layer (Phase 5) calls this
+    the instant it taps a card. OWN plays are GROUND TRUTH (card + ally + where +
+    when), stronger than any detected signal.
+  - update(tracks) each frame:
+    * a track BOUND to an own play stays authoritatively ALLY (+ its real card) --
+      the bot's own units can never be misread as enemy (kills the class of bug
+      that flipped a crossing Giant).
+    * a NEW ally/unknown track near a recent own play (window 3s, radius 120px)
+      BINDS to it -> confirmed card + ally.
+    * a NEW enemy track that isn't a spawner byproduct is an OPPONENT play; its
+      detector UNIT name is mapped to a CARD name (UNIT_TO_CARD: goblin->goblins,
+      spear_goblin->spear_goblins, archer->archers, ...; 1:1 names identity).
+  - THIN by design (the heavy opponent_play_tracker was retired): light byproduct
+    guard (a SPAWNABLE unit next to an enemy SPAWNER = byproduct, not a play); no
+    elixir/duplicate/persistence heuristics. Those layer on later.
+  Tests: game_knowledge/test_play_tracker.py (6/6) -- own-play bind, authority
+  (our unit can't become an opponent play), opponent detection once-per-track,
+  byproduct filter, unit->card, expiry.
+
+WIRED into detector_view --track: PlayTracker runs each frame; the game panel's
+PLAYS log now shows OPPONENT plays with CARD names; own-play side is overlaid on
+bound tracks. thin_tracker's old simplified enemy-play log was REMOVED (superseded)
+-- thin_tracker is now pure tracking.
+
+STATUS: opponent-play detection works live NOW (watch it during a manual game --
+new enemy troops appear as card-named plays). The own-play path is FRAMEWORK only
+until Phase 5 gives the bot an action layer to call record_own_play(). That call
+site is the single integration point.
+NEXT: Phase 5 decision/action logic -> it calls record_own_play() -> own-play
+ground truth comes online (and becomes the clean self-labeling data source).
+
+================================================================================
+>>> DIRECTION: DON'T HARDCODE FRAGILE DETERMINISTIC PERCEPTION FEATURES (2026-09-10) <<<
+================================================================================
+Duncan, after playtesting the --track view: it was "extremely laggy" and the play
+tracker showed "lots of troops and spells that didn't happen." His call: leave
+ELIXIR tracking and CYCLE tracking OUT -- "the bot should adopt those ideas anyway
+if done correctly. The level of accuracy on the visual will never get to where it
+needs to be to code these features in directly."
+
+PRINCIPLE (recorded): deterministic game-state features derived from VISION
+(elixir count, cycle reconstruction, discrete opponent-play detection) are too
+fragile on noisy perception to hardcode into the decision pipeline. The LEARNED
+policy (Phase 5+) should develop that awareness implicitly. THE EXCEPTION is
+OWN-PLAY ground truth: it comes from the bot's OWN actions, not vision, so it's
+reliable -- keep it (game_knowledge/play_tracker.py) for Phase 5 + self-labeling.
+
+FIXES THIS SESSION (both align with the above):
+1. LAG -- profiled: level-DIGIT reading was ~16ms/frame on a busy frame
+   (read_level template-matches ~68 templates per badge EVERY frame, re-reading a
+   level that never changes). Now GATED OFF by default: YoloDetector(read_levels=
+   False). Badge DETECTION stays (cheap) so units still show "Lv?"; numbers are
+   opt-in via detector_view --read-levels. detect() floor is ~28ms (YOLO); the
+   rest is capture latency + draw -- use --profile to see per-stage ms.
+2. FALSE PLAYS -- opponent-play detection is now OPT-IN (detector_view --plays),
+   OFF by default, so flickering/false detections no longer manufacture plays in
+   the live view. play_tracker.py (incl. the own-play framework) is unchanged;
+   just not run by default.
+Default --track view is now the reliable, cheap core: detector + thin_tracker
+(IDs/class/side/HP) + tower health. Added --profile (per-stage ms every 30 frames).
+
+OPEN: (a) Duncan re-tests --track (+ --profile) to confirm it's smooth and to
+locate any residual lag (likely capture latency -- ADB H.264, ~100-300ms, would
+need scrcpy). (b) Decide whether opponent-play detection should be REMOVED
+entirely (vs kept opt-in) given the direction. (c) Phase-4 deterministic
+game-knowledge modules (matchup table, elixir/cycle, belief state) are now
+DE-PRIORITIZED in favour of the learned policy.
+
+LAG DIAGNOSIS (2026-09-11, from Duncan's --profile run). Per-frame COMPUTE is fine:
+detect ~19ms, track ~0.1, towers ~1.7, draw ~2.8 => ~24ms (~40fps). So the level-
+read gate + plays-off fixes resolved the compute cost. The remaining "laggy" feel
+is CAPTURE LATENCY, not throughput: capture.screenshot() just copies the newest
+background-decoded frame (near-instant), but that frame is already ~100-300ms old
+because the backend is `adb shell screenrecord` (an H.264 encoder that buffers
+before emitting). Added a "capture" line to --profile to confirm (reads ~0-1ms).
+FIX = a lower-latency capture backend (scrcpy, ~35-70ms). No quick win short of it
+(screenshotbuffer already at 2). Cosmetic for a debug VIEW (all modules read the
+same frame, self-consistent) but REAL for Phase 5 (bot acting on stale frames).
+DECISION (recommended): defer scrcpy until the Phase 5 run-up, where low latency
+actually matters; the debug view is usable as-is now that compute is light.

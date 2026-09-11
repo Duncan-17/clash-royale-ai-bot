@@ -70,6 +70,7 @@ perception/
     tower_reader.py       — tower HP % from detected tower-bars (destroyed-state now driven by the detector)
 game_knowledge/
     cycle_tracker.py      — our own card cycle
+    play_tracker.py       — own-play ground truth + opponent-play attribution (unit→card)
     zone_classifier.py    — per-lane ally/enemy/neutral zones
 config/
     settings.py           — ADB host/port, LDPlayer install path
