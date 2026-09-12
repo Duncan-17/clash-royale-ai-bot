@@ -37,19 +37,27 @@ class DualCycleTracker:
     def __init__(self, enemy_deck, friendly_deck,
                  confidence_threshold: float = CLASSIFIER_CONF_THRESHOLD):
         """enemy_deck = top player's 8 card slugs, friendly_deck = bottom player's."""
-        self.enemy = CycleTracker(enemy_deck, confidence_threshold)
-        self.friendly = CycleTracker(friendly_deck, confidence_threshold)
+        # learn_deck=True: each player's deck is also LEARNED from the hands, so a
+        # pre-entered list isn't required and a mis-read menu deck gets cross-checked
+        # (the allowed set is the union of the given deck + the observed one). See
+        # CycleTracker.__init__.
+        self.enemy = CycleTracker(enemy_deck, confidence_threshold, learn_deck=True)
+        self.friendly = CycleTracker(friendly_deck, confidence_threshold, learn_deck=True)
         self.plays = []   # every play, both players: {side, card, cost, t, ...}
 
     def update(self, enemy_reads, friendly_reads, elix_enemy, elix_friendly, now):
         """One frame. *_reads = a player's 4 SlotRead; elix_* = that player's elixir
         float; now = a monotonic timestamp. Returns {"enemy": ev, "friendly": ev}
-        (each CycleTracker's per-frame dict) and appends any new play to self.plays."""
+        (each CycleTracker's per-frame dict) and appends any new play(s) to self.plays.
+
+        Pulls new plays straight from each CycleTracker.plays (not ev["last_play"]),
+        so if a player has two plays settle on the same frame both are captured."""
+        ne0, nf0 = len(self.enemy.plays), len(self.friendly.plays)
         ev_e = self.enemy.update(enemy_reads, _elixir_dict(elix_enemy), now)
         ev_f = self.friendly.update(friendly_reads, _elixir_dict(elix_friendly), now)
-        for side, ev in (("enemy", ev_e), ("friendly", ev_f)):
-            if ev["last_play"]:
-                play = dict(ev["last_play"])
+        for side, ct, n0 in (("enemy", self.enemy, ne0), ("friendly", self.friendly, nf0)):
+            for p in ct.plays[n0:]:
+                play = dict(p)
                 play["side"] = side
                 play["t"] = now
                 self.plays.append(play)

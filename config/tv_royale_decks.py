@@ -25,12 +25,8 @@ TEMPLATE_DIR = "assets/hand_templates"
 # Fill these in per match (top player / bottom player). 8 slugs each.
 # Set 2026-09-07 for Duncan's test match.
 ENEMY_DECK = [       # top player
-    "skeletons", "mega_minion", "goblin_cage", "arrows",
-    "fireball", "battle_ram", "wizard", "fire_spirit",
 ]
 FRIENDLY_DECK = [    # bottom player
-    "wizard", "knight", "prince", "valkyrie",
-    "fireball", "balloon", "bomb_tower", "mini_pekka",
 ]
 
 # Friendly-name -> catalog slug for the cards whose folder name isn't just
@@ -47,6 +43,8 @@ ALIASES = {
     "log": "the_log",
     "ewiz": "electro_wizard",
     "ebarbs": "elite_barbarians",
+    "e_barbs": "elite_barbarians",
+    "snowball": "giant_snowball",
     "mk": "mega_knight",
 }
 

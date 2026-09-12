@@ -1813,3 +1813,119 @@ STILL-OPEN / KNOWN GAPS (not blockers for designing the learning):
 - Out-of-roster cards (e.g. "hero wizard") -> add art to card_icons + retrain the classifier.
 - scrcpy low-latency capture -- matters when the bot ACTS on fast plays (Phase 5 polish).
 - The two TV-Royale live-validation assumptions above.
+
+================================================================================
+>>> TODO (deferred 2026-09-11): HAND CLASSIFIER -- loading-state zap<->skeleton_dragons <<<
+================================================================================
+BUG: the hand classifier reads a LOADING (greyed) zap as skeleton_dragons at high
+confidence (reproduced offline: the one real zap crop -> skeleton_dragons 1.000; the
+synthetic/colour zap icon -> zap correctly). Only the loading state fails.
+
+ROOT CAUSE (confirmed with Duncan): in the greyed loading state both cards are
+white-on-grey (white lightning vs white skulls) and look alike. skeleton_dragons has
+~8 REAL loading crops in TRAIN (so its synthetic is anchored to reality), while zap
+has ZERO real loading crops in train -- its 1 real crop is misrouted to VAL by
+training/generate_hand_dataset.py's real-crop split (`val if j % 6 == 0 else train`,
+so a class with 1 crop sends it to val). Duncan confirmed the SYNTHETIC loading zap
+LOOKS good, so appearance isn't the issue -- it's the un-bridged synthetic->real gap
+(the model learned ~30 good-looking synthetic loading zaps and still doesn't transfer
+to the real one, exactly because there's no real loading zap in train to anchor it).
+
+DEFERRED FIX EXPERIMENT (skipped for now, Duncan 2026-09-11):
+ 1. generate_hand_dataset.py: send a scarce class's real crops to TRAIN (not val),
+    and AUGMENT real crops (N variants each) so 1 real crop -> many train examples.
+ 2. regenerate the dataset; retrain to a CANDIDATE path (finetune_hand_cls.py
+    --name hand_cls_candidate -> runs/classify/hand_cls_candidate/weights/best.pt).
+    DO NOT overwrite assets/models/hand_cls/best.pt until validated.
+ 3. evaluate on the real hand_templates crops; live-test (only 1 real loading-zap
+    crop exists, so there's nothing to hold out -- a live game is the real proof).
+ 4. if the 1-crop bridge doesn't hold, gather a few real loading-zap crops via a
+    FLIP-CROP COLLECTOR (banks crops where a slot oscillates between two HIGH-conf
+    cards -- the <0.70 uncertain queue misses these because the misread is confident)
+    -> review/label -> retrain.
+
+NOT BLOCKING: deck-restriction (run --cycles / the watcher with the deck known)
+stops skeleton_dragons being output when it's not in the match; and the cycle+elixir
+gates + the inference path already prevent the false PLAY and recover the real one
+(logged as unknown_<cost>e when the card can't be named). This TODO is only to make
+the underlying READ correct so the card gets identified, not inferred.
+
+================================================================================
+>>> SESSION 2026-09-11 (later): TV ROYALE PLAY-VALIDATION HARDENING <<<
+================================================================================
+Built while validating the dual-cycle play detector against live TV Royale (all in
+game_knowledge/cycle_tracker.py + perception/tv_royale_debug.py; tests pass, nothing
+committed yet):
+- perception/tv_royale_debug.py --cycles: live PLAY-BY-PLAY validator (dual cycle
+  tracker on live frames; fixed-layout panel: both players' learned deck/queue,
+  OFF-DECK misreads, and the running plays list; throwaway log under logs/). Bigger
+  panel text. Classifier auto-restricts to the deck when the list is filled.
+- LEARNED DECK: cycle_tracker learns each player's 8 cards from the hands (persistence
+  >= DECK_ADMIT_SECONDS), so no pre-entered list is needed; a seed/menu deck still
+  pre-seeds + is cross-checked. Out-of-deck reads (e.g. blank-frame "mirror") filtered.
+- PLAY-CONFIRM DEBOUNCE (PLAY_CONFIRM_SECONDS): a play is logged only once the new
+  card persists ~0.4s -> absorbs blank-frame mirror blips (even when Mirror is in the
+  deck) and classifier flips that flicker back.
+- TWO GATES: ELIXIR-drop gate (a real play spends elixir; peak-before minus trough-
+  after >= 0.5, fail-open on no data) and CYCLE-REPEAT gate (a card can't replay until
+  it cycles back, CYCLE_REPEAT_WINDOW) -- drop resting-card misreads (e.g. the "second
+  graveyard" that was never played).
+- IN-DECK MIRROR cost resolved dynamically (last play + 1).
+- CYCLE+ELIXIR INFERENCE: when a play's card was never read (slot went unread->named
+  with an elixir drop), recover it -- NAME by elimination from the learned deck, else
+  log unknown_<cost>e (its crop is queued for review). Recovers misses like evo ebarbs.
+
+UPDATE 2026-09-12 (after 1st full-game test -- "2 issues"):
+- FIXED issue A: opening-deal DOUBLE-report (electro_spirit + phantom unknown_1e at
+  t=1.3). Cause: the old slot-transition inference misfired on the initial-hand fills.
+- REPLACED that inference with ELIXIR RECONCILIATION (cycle_tracker._reconcile_elixir):
+  detect a completed elixir dip (>= SPEND_MIN that stops falling) -> buffer as a spend
+  -> after RECON_LAG_SECONDS (1.8s, > pure-learn's ~1.5s register delay) any spend NOT
+  claimed by a detected slot-change play means an UNREAD card was played -> infer it
+  (named by elimination from the learned deck, else unknown_<cost>e). This recovers
+  unread plays ANYWHERE (mid-game evos, end-of-game), not just slots unread from frame
+  1, and no opening double-fire (the deal spends no elixir). Tested: recon_test
+  (unread->unknown / unread->named / normal-play-claims-spend / no-spend-on-regen),
+  gates_test, learn_mode, suite -- all green. Still uncommitted.
+- Issue B (evo BATTLE_RAM played, not registered): it was a MID-GAME evo the classifier
+  couldn't read; now the reconciliation captures the PLAY (as unknown_4e or named), so
+  it's no longer a silent miss. The NAME still needs the retrain below.
+
+UPDATE 2026-09-12 (2nd full-game test -- hallucinations):
+- CAUSE: persistent classifier MISREADS mid-game (cards not in the match, e.g.
+  "arrows"/"goblin_machine"=evo mortar) got LEARNED into the deck -> allowed -> logged
+  as phantom normal plays; plus a few spurious unknown_<cost>e from elixir-read noise.
+  (One real success too: a misread berserker/2-cost recovered as unknown_2e.)
+- FIXES (cycle_tracker, tested cap_test + recon noise case; all green, uncommitted):
+  1. LEARNED-DECK CAP at DECK_SIZE=8 -- a deck is 8 cards, so a 9th+ persistent read is
+     a misread and is NOT admitted (blocks arrows/goblin_machine going forward).
+  2. FULL LIST AUTHORITATIVE -- when an 8-card menu/list deck is provided, _allowed =
+     that deck only (no learned-union). Misreads not in the list are blocked outright;
+     a real card misread -> recovered by reconciliation as unknown_<cost>e. => filling
+     the list gives the CLEANEST reads; recommend it for real collection runs.
+  3. RECONCILE SUSTAIN check -- a detected elixir dip must stay down ~0.4s (only regen
+     refilling) to count as a spend; momentary read blips are discarded -> fewer
+     spurious unknown_<cost>e.
+- Residual: evo cards the classifier can't read still log as unknown_<cost>e (not
+  named) until the retrain below; pure-learn is inherently noisier than a filled list.
+
+UPDATE 2026-09-12 (3rd full-game test -- "almost perfect"; evo mortar + evo ram
+recovered with correct elixir). Remaining: spurious unknown_1e/2e (and a 5e) "when
+nothing was played." Root: those costs AREN'T in the enemy deck (its costs are {3,4,7}),
+so they were pure elixir-read noise. FIX: reconciliation now only infers a play whose
+cost EXISTS in the known+learned deck (_infer_from_spend deck-cost gate; fail-open
+before anything's learned). Kills unknown_<cost>e for costs no deck card has, while
+keeping the evo catches (evo mortar/ram are cost 4, which the non-evo versions make a
+known cost). Tested (recon_test cost-match case); all green. Still uncommitted.
+
+DATA GAPS PARKED ON THE SIDE (perception/retrain -- fix later, not blocking):
+- evo BATTLE_RAM (and any evo/hero the classifier can't read) -> collect crops +
+  retrain so it READS directly (most evos already read fine). Same bucket as the zap
+  loading-state TODO above. Until then, its plays log as unknown_<cost>e (not lost).
+- loading-state ZAP<->skeleton_dragons (the TODO block above): synthetic-fix retrain.
+- FLIP-CROP COLLECTOR (banks high-confidence oscillating-slot crops the <0.70 queue
+  misses) to gather the real crops the two retrains above need.
+
+NEXT: live-retest; then resume the LEARNING SCHEMA (clash-royale-learning-schema.md
+open decisions) + wire the logger (match-relative t; keep confirmed/desync/inferred;
+write games.jsonl/samples.jsonl).
