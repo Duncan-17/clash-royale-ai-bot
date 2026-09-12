@@ -29,37 +29,82 @@ from game_knowledge.tv_royale_cycles import DualCycleTracker
 from perception.tv_royale_hand_reader import read_both_hands_classifier
 
 PLAYS_LOG = "data/tv_royale_plays_log.jsonl"
+# detector raw_names that are NOT troops/buildings (HP bars, level badges, deploy
+# clocks, tower bars) -- excluded from the board-unit set fed to the learning logger.
+NON_UNIT_RAW = {"bar", "bar-level", "clock", "tower-bar", "king-tower-bar"}
+RESTRICT_MIN = 8   # soft-restrict a hand's reads to its deck once this many cards are
+# known/learned for that player (i.e. the full 8-card deck) -- see #2 cross-education.
+
+
+def _deck_prior(ct):
+    """A player's known deck as a soft read-restriction prior, or None until the full
+    8 are known (before that the classifier's own argmax is trusted)."""
+    known = ct.known_cards()
+    return known if len(known) >= RESTRICT_MIN else None
 
 
 class TvrAnalyzer:
-    def __init__(self, clf, card_collector=None, detector=None, plays_log=PLAYS_LOG):
+    def __init__(self, clf, card_collector=None, detector=None, plays_log=PLAYS_LOG,
+                 learn_logger=None):
         self.clf = clf
         self.card_collector = card_collector   # UncertainCardCollector or None
-        self.detector = detector               # YoloDetector(include_non_units=True) or None (--levels)
+        self.detector = detector               # YoloDetector(include_non_units=True) or None
         self.plays_log = plays_log
+        self.learn_logger = learn_logger       # data.learning_logger.LearningLogger or None
         self.cycles = None
         self._logged = 0
         self.game_id = None
 
     def start_game(self, enemy_deck, friendly_deck, game_id=None):
+        from data.learning_logger import BoardTeams
         self.cycles = DualCycleTracker(enemy_deck, friendly_deck)
+        self._teams = BoardTeams()          # learns card->owner from board bar-colour
         self._logged = 0
         self.game_id = game_id
+        if self.learn_logger is not None:
+            self.learn_logger.start_game(
+                game_id, {"enemy": list(enemy_deck), "friendly": list(friendly_deck)})
+
+    def end_game(self, result=None, end_frame=None):
+        """Called when a replay ends: finalize the learning game header + end screen."""
+        if self.learn_logger is not None:
+            self.learn_logger.end_game(result=result, end_frame=end_frame)
 
     def observe(self, frame, now=None):
         """One live frame. Returns the dual tracker's per-frame dict."""
         now = now or time.time()
-        enemy, friendly = read_both_hands_classifier(frame, self.clf)
-        out = self.cycles.update(enemy, friendly,
-                                 R.read_enemy_elixir(frame), R.read_friendly_elixir(frame), now)
-        # log any new plays
+        # soft-restrict each hand's reads to its known deck once fully learned (#2)
+        enemy, friendly = read_both_hands_classifier(
+            frame, self.clf, _deck_prior(self.cycles.enemy), _deck_prior(self.cycles.friendly))
+        elix_e, elix_f = R.read_enemy_elixir(frame), R.read_friendly_elixir(frame)
+        out = self.cycles.update(enemy, friendly, elix_e, elix_f, now)
+
+        dets = self.detector.detect(frame) if self.detector is not None else None
+        board_units = ([d for d in dets if d.get("raw_name") not in NON_UNIT_RAW
+                        and "tower" not in (d.get("name") or "")] if dets else None)
+        if board_units is not None:                         # enemy/friendly attribution (#3)
+            from data.learning_logger import resolve_sides
+            self._teams.observe(board_units)                # learn card->owner from bar colour
+            resolve_sides(board_units, self.cycles.enemy.known_cards(),
+                          self.cycles.friendly.known_cards(), teams=self._teams)
+        if self.learn_logger is not None and board_units is not None:
+            h, w = frame.shape[:2]
+            self.learn_logger.observe_units(board_units, now, w, h)
+
+        # log any new plays (to the plain plays log, and the learning dataset)
         while self._logged < len(self.cycles.plays):
-            self._log_play(self.cycles.plays[self._logged])
+            play = self.cycles.plays[self._logged]
+            self._teams.record_play(play["card"], play["side"])   # play = ground-truth owner
+            self._log_play(play)
+            if self.learn_logger is not None:
+                self.learn_logger.log_play(
+                    play, out, {"enemy": elix_e, "friendly": elix_f}, board_units, frame, now)
             self._logged += 1
+
         if self.card_collector is not None:
             self._collect_uncertain_cards(frame, enemy, friendly)
-        if self.detector is not None:
-            self._collect_unknown_levels(frame)
+        if dets is not None:
+            self._collect_unknown_levels(frame, dets)
         return out
 
     def _collect_uncertain_cards(self, frame, enemy, friendly):
@@ -69,9 +114,9 @@ class TvrAnalyzer:
                 x1, y1, x2, y2 = box
                 self.card_collector.observe((side, i), rd.card, rd.score, False, frame[y1:y2, x1:x2])
 
-    def _collect_unknown_levels(self, frame):
+    def _collect_unknown_levels(self, frame, dets):
         from perception.level_reader import queue_level_crop, read_level
-        for d in self.detector.detect(frame):
+        for d in dets:
             if d.get("raw_name") == "bar-level":
                 value, _conf = read_level(frame, d["bbox"])
                 if value is None:                 # a level digit we can't read yet -> queue it

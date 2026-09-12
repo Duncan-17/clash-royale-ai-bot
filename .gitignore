@@ -6,6 +6,8 @@ test_screenshot.png
 temp_img/
 logs/
 data/unit_training/
+# Generated learning dataset (samples/headers + archived frames) -- can be huge.
+data/learning/
 
 # Third-party detector weights (~88MB each) — downloadable, not ours to vendor.
 # See perception/katacr_detector.py docstring for the source links.

@@ -96,22 +96,28 @@ def read_both_hands(screenshot, templates, lazy_conf=None):
             read_hand(screenshot, templates, False, lazy_conf))
 
 
-def read_both_hands_classifier(screenshot, clf):
+def read_both_hands_classifier(screenshot, clf, enemy_allowed=None, friendly_allowed=None):
     """(enemy_reads, friendly_reads) scored by the YOLOv8-cls hand classifier
     (perception.hand_classifier). Classifies the 8 resting slot crops in ONE batched
     predict. NO selection handling (removed 2026-09-11, Duncan): the classifier reads
     a card whether or not it's lifted/selected, so the resting-vs-shifted 'is_selected'
     logic only added confusion + false reads -- and the authoritative played signal is
     a slot's card being REPLACED + an elixir drop (cycle_tracker), not selection.
-    is_selected is always False here, kept only so SlotRead stays drop-in for drawing."""
-    specs, crops = [], []
+    is_selected is always False here, kept only so SlotRead stays drop-in for drawing.
+
+    enemy_allowed / friendly_allowed: optional per-player card-slug sets to SOFT-restrict
+    that hand to its known deck (bias toward those cards; a confident outsider still gets
+    through -- see HandClassifier.classify_many)."""
+    specs, crops, allowed = [], [], []
     for is_enemy in (True, False):
         slots = enemy_hand_slots() if is_enemy else friendly_hand_slots()
+        a = enemy_allowed if is_enemy else friendly_allowed
         for box in slots:
             x1, y1, x2, y2 = box
             specs.append(is_enemy)
             crops.append(screenshot[y1:y2, x1:x2])
-    reads = clf.classify_many(crops)
+            allowed.append(a)
+    reads = clf.classify_many(crops, allowed_sets=allowed)
     enemy, friendly = [], []
     for is_enemy, (card, score) in zip(specs, reads):
         sr = SlotRead(card, score, False, round(score, 3), None)

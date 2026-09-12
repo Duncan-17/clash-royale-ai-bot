@@ -290,6 +290,12 @@ class CycleTracker:
         """The cards learned to be in this player's deck so far (learn_deck mode)."""
         return set(self._observed)
 
+    def known_cards(self) -> set:
+        """This player's cards we're confident about: the given deck + the learned one.
+        Used as a side/class prior for the board detector (a troop belongs to whoever's
+        deck holds its card)."""
+        return set(self._deck_set) | set(self._observed)
+
     def _learn(self, slot_results, now: float):
         """Grow the learned deck: a card that holds a slot continuously for
         >= DECK_ADMIT_SECONDS is admitted as really in the deck. A blank-frame

@@ -16,6 +16,21 @@ import cv2
 
 DEFAULT_MODEL = "assets/models/hand_cls/best.pt"
 IMGSZ = 128
+SOFT_MARGIN = 0.25     # soft deck-restrict: an out-of-deck card is only taken over the
+# best in-deck card if it beats it by at least this much probability. So a clear read
+# of a card the deck was slightly misread on still gets through, but a weak misread
+# snaps to the deck. Tunable.
+
+
+def _soft_pick(p, allow, soft_margin=SOFT_MARGIN):
+    """Index chosen from probs `p`: the overall best, unless it's outside `allow` and
+    doesn't beat the best in-`allow` card by `soft_margin` (then snap to that in-set
+    card). allow falsy -> plain argmax. See classify_many."""
+    if not allow:
+        return int(p.argmax())
+    best = int(p.argmax())
+    in_best = max(allow, key=lambda k: p[k])
+    return best if (best in allow or p[best] - p[in_best] >= soft_margin) else in_best
 
 
 class HandClassifier:
@@ -38,20 +53,28 @@ class HandClassifier:
         else:
             self.allowed_idx = None
 
-    def classify_many(self, crops):
-        """[(card_slug, confidence)] for a list of BGR crops, in one batched
-        predict. Empty input -> []."""
+    def classify_many(self, crops, allowed_sets=None, soft_margin=SOFT_MARGIN):
+        """[(card_slug, confidence)] for a list of BGR crops, in one batched predict.
+
+        allowed_sets: optional per-crop iterable of card slugs to SOFT-restrict that
+        crop to (e.g. the reading player's known deck). Soft = take the overall best
+        card only if it's in the set OR beats the best in-set card by `soft_margin`;
+        otherwise snap to the best in-set card. None for a crop = no restriction (falls
+        back to the constructor's `allowed`, else unrestricted). Empty input -> []."""
         if not crops:
             return []
         imgs = [cv2.resize(c, (IMGSZ, IMGSZ)) if c.size else c for c in crops]
         res = self.model.predict(imgs, imgsz=IMGSZ, device=self.device, verbose=False)
         out = []
-        for r in res:
+        for j, r in enumerate(res):
             p = r.probs.data.detach().cpu().numpy()
-            if self.allowed_idx is not None:
-                i = max(self.allowed_idx, key=lambda k: p[k])
-            else:
-                i = int(p.argmax())
+            allow = None
+            if allowed_sets is not None and allowed_sets[j]:
+                aset = set(allowed_sets[j])
+                allow = [k for k, n in self.names.items() if n in aset]
+            elif self.allowed_idx is not None:
+                allow = self.allowed_idx
+            i = _soft_pick(p, allow, soft_margin)
             out.append((self.names[i], float(p[i])))
         return out
 

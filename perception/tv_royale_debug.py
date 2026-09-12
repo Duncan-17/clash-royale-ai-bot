@@ -36,6 +36,7 @@ import numpy as np
 from config import tv_royale_regions as R
 from config import tv_royale_decks as TVD
 from config.tv_royale_decks import restricted_templates, combined_cards
+from data.learning_logger import resolve_sides, BoardTeams
 from game_knowledge.tv_royale_cycles import DualCycleTracker, CLASSIFIER_CONF_THRESHOLD
 from perception.card_detector import load_templates
 from perception.overlay import draw_box, draw_label, _alpha_rect
@@ -100,12 +101,13 @@ def cap_templates(templates, n):
     return out
 
 
-def read_frame(frame, templates, clf=None):
+def read_frame(frame, templates, clf=None, enemy_allowed=None, friendly_allowed=None):
     """All per-frame reads in one place, so the live loop can both draw them and
     feed them to the collector without re-matching. clf!=None -> read the hands
-    with the YOLOv8-cls classifier instead of template matching."""
+    with the YOLOv8-cls classifier instead of template matching. enemy_allowed/
+    friendly_allowed soft-restrict each hand to its known deck (#2)."""
     if clf is not None:
-        enemy, friendly = read_both_hands_classifier(frame, clf)
+        enemy, friendly = read_both_hands_classifier(frame, clf, enemy_allowed, friendly_allowed)
     else:
         enemy = read_hand(frame, templates, is_enemy=True, lazy_conf=LAZY_RESTING_CONF)
         friendly = read_hand(frame, templates, is_enemy=False, lazy_conf=LAZY_RESTING_CONF)
@@ -172,6 +174,9 @@ FONT = cv2.FONT_HERSHEY_DUPLEX
 PANEL_W_CYC = 470
 ENE_COL = (70, 70, 235)    # enemy / top player (red, BGR)
 FRI_COL = (235, 170, 70)   # friendly / bottom player (blue, BGR)
+PLACE_COL = (0, 235, 235)  # placement marker (yellow, BGR)
+# detector raw_names that aren't troops/buildings (bars, badges, clocks, tower bars).
+NON_UNIT_RAW = {"bar", "bar-level", "clock", "tower-bar", "king-tower-bar"}
 
 # Panel text sizing. The whole view is downscaled by _fit before display, so these
 # are deliberately large to stay readable. Tune here.
@@ -203,14 +208,15 @@ def _draw_cyc_section(panel, key, rows):
 def _queue_rows(ev, elixir, learned_n, col):
     """A player's reconstructed cycle state + learned-deck progress, so the
     tracker's inference is visible next to the arena."""
+    sr = "  [SR]" if learned_n >= 8 else ""     # soft-restrict engaged (#2) at 8/8
     if ev is None:
         return [(f"elixir  {elixir:4.1f}", col),
-                (f"learned {learned_n}/8", col),
+                (f"learned {learned_n}/8{sr}", col),
                 ("(waiting for match)", col)]
     rest = ", ".join(str(c) for c in ev["rest_of_queue"])
     return [
         (f"elixir  {elixir:4.1f}", col),
-        (f"learned {learned_n}/8", col),
+        (f"learned {learned_n}/8{sr}", col),
         (f"on-deck {ev['on_deck']}", col),
         (f"queue   {rest[:32]}", col),
         (f"resolved {ev['queue_fully_resolved']}", col),
@@ -218,17 +224,23 @@ def _queue_rows(ev, elixir, learned_n, col):
 
 
 class CyclesValidator:
-    """Drives the dual cycle tracker over live frames + a throwaway play log."""
+    """Drives the dual cycle tracker over live frames + a throwaway play log, and
+    (optionally) writes the LEARNING dataset via a LearningLogger."""
 
-    def __init__(self):
+    def __init__(self, logger=None):
         os.makedirs("logs", exist_ok=True)
         self.log_path = os.path.join(
             "logs", f"tvr_plays_validation_{datetime.now():%Y%m%d_%H%M%S}.jsonl")
+        self.logger = logger            # data.learning_logger.LearningLogger or None
+        self.recent_placements = []     # {x,y (frame px), t, card} for the arena overlay
+        self._game_started = False
         self.reset()
 
     def reset(self):
         """(Re)build the tracker from the CURRENT config decks -- reload picks up
         an edit made for a new replay. Bound to 'r' in the live view."""
+        if self.logger is not None and self._game_started:
+            self.logger.end_game()      # finalize the previous game's header first
         importlib.reload(TVD)
         self.enemy_deck = [TVD.normalize(c) for c in TVD.ENEMY_DECK]
         self.friendly_deck = [TVD.normalize(c) for c in TVD.FRIENDLY_DECK]
@@ -237,6 +249,12 @@ class CyclesValidator:
         self.logged = 0
         self.last_ev = {"enemy": None, "friendly": None}
         self.offdeck = {}   # card -> count of high-conf reads not in that hand's deck
+        self.recent_placements = []
+        self.teams = BoardTeams()   # learns card->owner side from board bar-colour
+        if self.logger is not None:
+            gid = datetime.now().strftime("%H%M%S")
+            self.logger.start_game(gid, {"enemy": self.enemy_deck, "friendly": self.friendly_deck})
+            self._game_started = True
         seeded = "(learning from hands only)" if not (self.enemy_deck or self.friendly_deck) \
             else "(pre-seeded from config + learning from hands)"
         print(f"[cycles] reset {seeded}")
@@ -250,17 +268,41 @@ class CyclesValidator:
                   f"and get full queue reconstruction.")
         print(f"[cycles] throwaway validation log -> {self.log_path}")
 
-    def observe(self, data, now):
+    def observe(self, data, now, frame=None, units=None):
         if self.t0 is None:
             self.t0 = now
-        # tally BEFORE update() so the learned deck reflects frames already seen
+        if self.logger is not None and frame is not None and units is not None:
+            h, w = frame.shape[:2]
+            self.logger.observe_units(units, now, w, h)   # track appearances for placement
         self.last_ev = self.tracker.update(
             data["enemy"], data["friendly"], data["elix_e"], data["elix_f"], now)
         self._tally_offdeck(data["enemy"], self.tracker.enemy)
         self._tally_offdeck(data["friendly"], self.tracker.friendly)
         while self.logged < len(self.tracker.plays):
-            self._emit(self.tracker.plays[self.logged])
+            play = self.tracker.plays[self.logged]
+            self.teams.record_play(play["card"], play["side"])   # play = ground-truth owner
+            self._emit(play)
+            if self.logger is not None and frame is not None:
+                self._log_learn(play, data, units, frame, now)
             self.logged += 1
+
+    def _log_learn(self, play, data, units, frame, now):
+        sample = self.logger.log_play(
+            play, self.last_ev, {"enemy": data["elix_e"], "friendly": data["elix_f"]},
+            units, frame, now)
+        if not sample:
+            return
+        pos = sample["action"].get("position")
+        if pos:                             # reconstruct frame px for the overlay marker
+            h, w = frame.shape[:2]
+            fx = int(pos["x"] * w)
+            fy = int((pos["y"] if play["side"] == "friendly" else 1.0 - pos["y"]) * h)
+            self.recent_placements.append({"x": fx, "y": fy, "t": now, "card": play["card"]})
+
+    def end_game(self, end_frame=None):
+        if self.logger is not None and self._game_started:
+            self.logger.end_game(end_frame=end_frame)
+            self._game_started = False
 
     def _tally_offdeck(self, reads, ct):
         """Count confident reads whose card isn't in the known/learned deck -- e.g.
@@ -299,6 +341,31 @@ class CyclesValidator:
     def rel_plays(self):
         t0 = self.t0 or 0
         return [dict(p, rel_t=round(p["t"] - t0, 1)) for p in self.tracker.plays]
+
+
+def draw_board(display, units):
+    """Overlay the detector's units on the arena, colored by side (blue=ally/bottom,
+    red=enemy/top). The label shows the side SOURCE so the cross-education is visible:
+      [b]=bar colour (damaged, reliable)  [o]=owner learned from earlier bar-colour
+      sightings of this card  [d]=deck prior (card in one deck)  [p]=position guess only
+      [?]=side unknown. A trailing ! marks off_deck / struggle (name not in the match)."""
+    for u in units:
+        side = u.get("side")
+        col = FRI_COL if side == "ally" else (ENE_COL if side == "enemy" else (150, 150, 150))
+        src = u.get("side_source")
+        tag = {"deck": "d", "position": "p", "board": "o"}.get(src, "b" if side in ("enemy", "ally") else "?")
+        label = f"{u.get('name', '')} [{tag}]" + ("!" if u.get("off_deck") else "")
+        draw_box(display, u["bbox"], col, label=label, radius=4, thickness=2)
+
+
+def draw_placements(display, placements, now, ttl=3.0):
+    """Ring + card name at each recently-detected placement point (fades after ttl)."""
+    for p in placements:
+        if now - p["t"] > ttl:
+            continue
+        cv2.circle(display, (p["x"], p["y"]), 24, PLACE_COL, 3, cv2.LINE_AA)
+        cv2.putText(display, str(p["card"])[:12], (p["x"] + 28, p["y"] + 6), FONT, 0.7,
+                    PLACE_COL, 2, cv2.LINE_AA)
 
 
 def cycles_panel(validator, data, in_match, height):
@@ -365,6 +432,13 @@ def main():
                         "--classifier. Decks are LEARNED from the hands, so config/tv_royale_decks.py "
                         "is optional (fill it to pre-seed + get full queue reconstruction). Press r "
                         "to reset for a new replay. Logs to a throwaway file, not the real log.")
+    p.add_argument("--board", action="store_true",
+                   help="--cycles: overlay the detector's units on the arena (blue=bottom, "
+                        "red=top) so you can see the board read. Runs the detector each frame.")
+    p.add_argument("--learn", action="store_true",
+                   help="--cycles: also WRITE the learning dataset (data/learning/) while you "
+                        "watch -- one egocentric state->action sample per play, with detector "
+                        "board + best-effort placement + archived frame. Implies --board.")
     args = p.parse_args()
 
     templates = cap_templates(restricted_templates(load_templates()), args.match_examples)
@@ -375,7 +449,10 @@ def main():
         # filled -- it can't then output a card that isn't in play (kills confusable-
         # pair flips like zap<->skeleton_dragons at the source). Empty list -> [] ->
         # unrestricted (pure learn). --restrict forces it for plain --classifier too.
-        allowed = combined_cards() if (args.restrict or args.cycles) else None
+        # --cycles uses SOFT per-hand restriction from the LEARNED deck (#2), applied at
+        # read time -- so don't hard-restrict at construction. --restrict still forces a
+        # hard restrict for plain --classifier comparison.
+        allowed = combined_cards() if (args.restrict and not args.cycles) else None
         clf = HandClassifier(allowed=allowed)
         n = len(clf.allowed_idx) if clf.allowed_idx else 122
         backend = f"classifier:{n}"
@@ -413,25 +490,61 @@ def main():
             if not combined_cards():
                 print("NOTE: --collect works best with both decks filled in "
                       "config/tv_royale_decks.py (guesses are then best-of-16).")
-    validator = CyclesValidator() if args.cycles else None
+    # --board / --learn (cycles only): run the detector for the arena overlay, and
+    # --learn additionally writes the learning dataset while you watch.
+    detector = learn_logger = None
+    want_board = args.cycles and (args.board or args.learn)
+    if want_board:
+        from perception.yolo_detector import YoloDetector
+        detector = YoloDetector(include_non_units=True)
+        print("Detector on: board overlay live (blue=bottom, red=top).")
+    if args.cycles and args.learn:
+        from data.learning_logger import LearningLogger
+        learn_logger = LearningLogger()
+        print("LEARN on: writing data/learning/ (samples + archived frames) while watching.")
+    validator = CyclesValidator(logger=learn_logger) if args.cycles else None
     if validator:
         print("CYCLES validation live. Watch the replay; each PLAY prints here + shows in the "
               "panel (E=enemy/top red, F=friendly/bottom blue). q=quit, r=reset for a new replay.")
     print("Connecting to LDPlayer... (q in the window to quit)")
     capture = ScreenCapture(EmulatorController())
+    last_frame = None
     try:
         while True:
             frame = capture.screenshot()
-            data = read_frame(frame, templates, clf)
+            last_frame = frame
+            ea = fa = None
+            if validator is not None and clf is not None:   # soft deck-restrict (#2)
+                ek, fk = validator.tracker.enemy.known_cards(), validator.tracker.friendly.known_cards()
+                ea = ek if len(ek) >= 8 else None
+                fa = fk if len(fk) >= 8 else None
+            data = read_frame(frame, templates, clf, ea, fa)
             note = ""
             if collector:
                 _collect_frame(collector, frame, data)
                 note = f"   collected:{collector.saved}"
             display = draw(frame, data, args.min_confidence, note, backend)
             if validator:
+                now = time.time()
                 in_match = R.is_in_match(frame)
+                units = None
+                if detector is not None:
+                    units = [d for d in detector.detect(frame)
+                             if d.get("raw_name") not in NON_UNIT_RAW
+                             and "tower" not in (d.get("name") or "")]
+                    # enemy/friendly for fresh/undamaged troops (#3): bar-colour >
+                    # board-learned owner > deck prior > position, so the overlay + logged
+                    # board show the right team before a health bar appears.
+                    validator.teams.observe(units)
+                    resolve_sides(units, validator.tracker.enemy.known_cards(),
+                                  validator.tracker.friendly.known_cards(), teams=validator.teams)
+                    draw_board(display, units)
                 if in_match:
-                    validator.observe(data, time.time())
+                    validator.observe(data, now, frame, units)
+                draw_placements(display, validator.recent_placements, now)
+                if learn_logger is not None:
+                    cv2.putText(display, f"REC learn samples:{learn_logger.samples}", (10, 60),
+                                FONT, 0.7, PLACE_COL, 2, cv2.LINE_AA)
                 display = np.hstack([cycles_panel(validator, data, in_match, display.shape[0]),
                                      display])
             cv2.imshow(WINDOW, _fit(display))
@@ -441,11 +554,16 @@ def main():
             if key == ord("r") and validator:
                 validator.reset()
     finally:
+        if validator:
+            validator.end_game(end_frame=last_frame)   # finalize the learning game header
         capture.stop()
         cv2.destroyAllWindows()
         if collector:
             print(f"Banked {collector.saved} crop(s) to {collector.queue_dir} — "
                   f"review with: python -m perception.review_tv_hand_queue")
+        if learn_logger is not None:
+            print(f"Learning dataset: {learn_logger.samples} sample(s) in the last game "
+                  f"-> data/learning/ (samples.jsonl, games.jsonl, frames/).")
 
 
 if __name__ == "__main__":

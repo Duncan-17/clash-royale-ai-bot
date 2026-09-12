@@ -128,6 +128,7 @@ def analyze_match(capture, analyzer):
     self-collect uncertain cards / unknown levels. Returns plays detected this game."""
     misses = 0
     plays_start = analyzer.play_count
+    end_frame = None
     while misses < END_CONFIRM_POLLS:
         frame = capture.screenshot()
         if is_in_match(frame):
@@ -135,7 +136,9 @@ def analyze_match(capture, analyzer):
             analyzer.observe(frame)
         else:
             misses += 1
+            end_frame = frame               # last non-match frame ~ the results screen
         _sleep(NAV.POLL_INTERVAL_SECONDS)
+    analyzer.end_game(end_frame=end_frame)  # finalize the learning game header + end shot
     return analyzer.play_count - plays_start
 
 
@@ -165,20 +168,26 @@ def watch_game(controller, capture, game, analyzer):
 
 
 def run(minutes=None, max_replays=None, arenas=1, games_per_arena=None,
-        arena_direction="next", levels=False):
+        arena_direction="next", levels=False, learn=False):
     print("Connecting to LDPlayer...")
     controller = EmulatorController()
     capture = ScreenCapture(controller)
     icon_templates = load_icon_templates()
     clf = HandClassifier()                      # all 122 cards, unrestricted
     card_collector = UncertainCardCollector()   # self-stocks the cards it's unsure about
+    learn_logger = None
+    if learn:
+        from data.learning_logger import LearningLogger
+        learn_logger = LearningLogger()
     detector = None
-    if levels:
+    if levels or learn:                         # board/placement + level badges both need it
         from perception.yolo_detector import YoloDetector
-        detector = YoloDetector(include_non_units=True)   # for troop level-badge collection
-    analyzer = TvrAnalyzer(clf, card_collector=card_collector, detector=detector)
+        detector = YoloDetector(include_non_units=True)
+    analyzer = TvrAnalyzer(clf, card_collector=card_collector, detector=detector,
+                           learn_logger=learn_logger)
     print(f"Classifier hand reading -> dual cycle tracker (plays -> {analyzer.plays_log}); "
-          f"uncertain cards -> review queue{'; troop levels -> level queue' if levels else ''}.")
+          f"uncertain cards -> review queue{'; troop levels -> level queue' if levels else ''}"
+          f"{'; LEARNING dataset -> data/learning/' if learn else ''}.")
 
     watched = set()
     replays = 0
@@ -258,9 +267,14 @@ def main():
     p.add_argument("--levels", action="store_true",
                    help="Also run the detector to self-queue unknown troop level badges. "
                         "Needs a live check that the detector transfers to the TV Royale board.")
+    p.add_argument("--learn", action="store_true",
+                   help="Write the LEARNING dataset (data/learning/: games.jsonl, samples.jsonl, "
+                        "archived frames) -- one egocentric state->action sample per play, with "
+                        "detector board + best-effort placement. Runs the detector each frame.")
     args = p.parse_args()
     run(minutes=args.minutes, max_replays=args.max_replays, arenas=args.arenas,
-        games_per_arena=args.games_per_arena, arena_direction=args.arena_direction, levels=args.levels)
+        games_per_arena=args.games_per_arena, arena_direction=args.arena_direction,
+        levels=args.levels, learn=args.learn)
 
 
 if __name__ == "__main__":

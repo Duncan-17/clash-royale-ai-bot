@@ -1929,3 +1929,143 @@ DATA GAPS PARKED ON THE SIDE (perception/retrain -- fix later, not blocking):
 NEXT: live-retest; then resume the LEARNING SCHEMA (clash-royale-learning-schema.md
 open decisions) + wire the logger (match-relative t; keep confirmed/desync/inferred;
 write games.jsonl/samples.jsonl).
+
+================================================================================
+>>> LEARNING LOGGER BUILT (2026-09-12) -- imitation dataset from TV Royale <<<
+================================================================================
+data/learning_logger.py (NEW) + wired into tv_royale_analyzer + watcher --learn.
+Run: python -m data.tv_royale_watcher --minutes 120 --learn
+Writes data/learning/ (gitignored): games.jsonl (header+decks+result), samples.jsonl
+(one EGOCENTRIC state->action sample per play), frames/<game>/NNN.jpg (raw frame per
+play) + end.jpg. Decisions taken with Duncan:
+- SCOPE "do it all": #3 card data (play card/cost/timing/inferred/confirmed + BOTH
+  players' elixir + hand/cycle) SOLID; #2 detector board units (egocentric-canon,
+  self=bottom) + best-effort PLACEMENT (a newly-appeared self-side unit matching the
+  played card; null unless unambiguous -- never a wrong position); #1 raw frame archived.
+- EGOCENTRIC + PRIVILEGED: every sample from the acting player's view (self_/opp_); opp
+  hand/elixir logged but PRIVILEGED (reward/belief only, never a live-policy input).
+- Detector runs every frame in --learn (board + placement + level badges share it).
+Tested offline (learn_logger_test: egocentric sample, placement, board canon, frame
+archive, game header/result; analyzer start/end wiring). Committed? NO -- uncommitted.
+FLAGS / still-open:
+- DETECTOR-ON-TV-ROYALE unvalidated -> board/placement quality unverified; validate live.
+- PLACEMENT is confidence-gated best-effort (abstains a lot); precise localization can
+  be re-run OFFLINE on the archived frames later (that's why frames are saved).
+- MATCH RESULT (crowns): end frame is archived but crown PARSING needs an end-screen
+  region calibration (a capture from Duncan) -> result=null until then.
+- Phase is derived from match-relative time (no TV Royale game clock) -> approximate.
+- NEXT for learning: validate the dataset on a real --learn run; calibrate crowns; then
+  Phase 7 dataloader (encode raw -> tensors) + first behavior-cloning policy.
+
+CROSS-SYSTEM EDUCATION -- design directions (Duncan 2026-09-12, after a --learn game).
+The modules should be PRIORS for each other, not independent (matches the philosophy
+doc's algorithmic-modules-feed-perception idea):
+1. OWN placement is free -- when the bot plays it CHOSE the placement, so we never
+   perceive our own placement (self-play/live). Placement-PERCEPTION is only an ENEMY
+   problem. => TV Royale placement is a bonus (card+timing is the TVR value; placement
+   LEARNING leans on self-play's own-play ground truth). Don't over-invest in TVR
+   localization; skip friendly-side placement.
+2. LEARNED DECK -> constrain YOLO/classifier. Hand classifier already restricts to a
+   known deck; extend: once all 8 are learned, SOFT-restrict the classifier to them
+   (bias, not hard -- deck may be slightly misread); and prefer the 16 deck cards in
+   the BOARD detector (a unit in neither deck is likely a misclass -> snap/flag).
+3. DECKS -> resolve enemy vs friendly. A detected troop's side = whichever deck holds
+   that card (more reliable than bar-colour/position). Fallback to colour/position when
+   the card is in BOTH decks (mirror match) or the deck isn't confident yet. This
+   directly improves the board data the --learn capture records.
+Status (updated 2026-09-12): #1 and #3 BUILT + tested (cross_edu_test); #2 still pending.
+- #3 data/learning_logger.resolve_sides(): deck-prior enemy/friendly for UNDAMAGED
+  troops (bar-colour trusted once damaged; ambiguous/shared cards left to colour/pos).
+  Wired into tv_royale_analyzer (logged board) + tv_royale_debug --board/--learn overlay.
+  cycle_tracker.known_cards() exposes each player's given+learned deck as the prior.
+- #1 placement now logged for ENEMY plays only (own/friendly placement comes from the
+  action in self-play, not perception).
+- #2 BUILT + tested (soft_test): SOFT deck-restrict of the hand reads. Once a player's
+  known deck reaches 8, each hand is read biased toward that deck (hand_classifier.
+  _soft_pick / classify_many allowed_sets; read_both_hands_classifier per-hand allowed;
+  wired in tv_royale_analyzer + tv_royale_debug --cycles, which now uses SOFT per-hand
+  instead of the old hard list-restrict). SOFT_MARGIN=0.25: a confident outsider still
+  gets through (deck may be misread). Plus a board `off_deck` flag on detector units
+  whose class is in neither deck (suspect read). cycle_tracker.known_cards() is the prior.
+All #1/#2/#3 done. Still uncommitted.
+
+UPDATE 2026-09-12 (after --learn game, Duncan corrected an over-pessimistic take):
+Priors CAN improve the board -- two real gaps fixed (data.learning_logger.BoardTeams +
+resolve_sides, wired into analyzer + tv_royale_debug; tested boardteams_test):
+- ZAPPIES-SIDE (point 1): #3 failed live because the enemy deck the resolver checked
+  didn't contain "zappies" (the hand classifier had mis-learned it as mortar). FIX:
+  BoardTeams learns each card's OWNER side from reliable BAR-COLOUR sightings (independent
+  of the hand read), so an undamaged troop placed in the WRONG half (e.g. after a tower
+  falls) is flipped to its true owner. Side precedence now: bar-colour [b] > board-learned
+  owner [o] > deck prior [d] > position [p]. Overlay tags show which fired.
+- STRUGGLE CASES (point 2): a detector read whose name is in NEITHER deck AND never
+  reliably seen on the board is impossible -> flagged struggle/off_deck (not trusted as a
+  troop that isn't in the game). NOTE: flagged, NOT renamed (Duncan declined renaming to
+  "unknown" in the log -- raw name kept + off_deck flag). Fully reclassifying a struggle
+  troop (naming it by cycle-elimination) is a larger feature, not built.
+- The board DETECTOR's raw class quality (evo/confusable cards) is still a retrain; these
+  priors fix SIDE + reject impossible names, they don't rename a struggle troop.
+
+================================================================================
+>>> HANDOFF: BOARD UNIT TRACKING + STRUGGLE-CROP QUEUE (2026-09-12) -- NEW CHAT <<<
+================================================================================
+Take this into a fresh chat. The TV Royale play detection + learning logger are DONE
+and solid; the remaining perception gaps are on the BOARD (detector) side. Two builds,
+in priority order. FIRST: commit the current uncommitted batch (see "STATE" below).
+
+THE PROBLEM (seen in a real --learn game, data/learning/samples.jsonl):
+- #1 SHARED-CARD SIDE: at t=0 an enemy dart_goblin at the bridge was labelled friendly.
+  BOTH decks run dart_goblin, so no per-CARD prior can say whose it is -- only linking
+  THIS play to THIS board unit disambiguates ("the one that just left the ENEMY hand").
+- #2 CLASS FLICKER: a friendly berserker read as baby_dragon/bandit/etc. The cycle
+  tracker KNOWS berserker was just played; that should STAMP the new unit's name.
+Both need the same missing mechanism (below). #3 (zappies wrong side) is already fixed
+via play-event ownership (BoardTeams.record_play).
+
+BUILD A -- PLAY<->UNIT TRACKER ("loose play localization", rebuilt thin):
+  Goal: when a play fires (side S, card C, ~time T), BIND it to the newly-appeared
+  board unit and STAMP that unit with card=C + side=S, and make it STICK as the unit
+  moves/flickers. Then card+side+placement all come from the play GROUND TRUTH instead
+  of the flickering detector.
+  Needs: a light board unit tracker (stable IDs across frames by position+proximity;
+  class debounce) -- perception/thin_tracker.py already does exactly this for live play,
+  consider reusing it on the TV Royale board (same 900x1600 arena). On a play, match to
+  the new track in the appearance window (data.learning_logger.BoardTeams already tracks
+  appearances / could hold tracks), assign card+side, carry it. Confidence-gate: if no
+  clear new track, abstain (don't guess).
+  Payoffs: fixes #1 (side from the play, even for shared cards), #2 (class from the play,
+  over the flicker), and makes enemy PLACEMENT exact (currently best-effort ~1/3).
+
+BUILD B -- STRUGGLE-CROP REVIEW QUEUE (Duncan's idea 2026-09-12; do this too, it's the
+  ROOT fix for the detector's struggling cards, and it makes labelling fast):
+  When the board detector reads a troop whose class is in NEITHER deck's 8 (already
+  flagged u["struggle"]/off_deck in resolve_sides), CAPTURE its crop (frame[bbox]) to a
+  review queue (mirror the hand pipeline: perception/tv_royale_collector.
+  UncertainCardCollector + perception/review_tv_hand_queue.py). REVIEW TOOL
+  (perception/review_board_queue.py, NEW): show the crop + the CANDIDATE cards as a
+  numbered list -- 1-8 from the unit's likely player's deck (by its side), or 1-16 if the
+  side is unknown -- Duncan presses a number to label it; or types a name if our deck was
+  mis-built. Labelled crops -> the detector's training data (data/unit_training/ per the
+  Phase-3b pipeline) -> RETRAIN the detector so those cards read correctly. Deck knowledge
+  makes the label a 1-of-8 pick, not 1-of-150 (systems educate each other).
+  Note: RULE #2 -- queue for Duncan's review, do NOT auto-file into a permanent library.
+
+WHAT'S ALREADY BUILT (the substrate both builds sit on; all this session, TESTED):
+- data/learning_logger.py: LearningLogger (games.jsonl/samples.jsonl + archived frames),
+  resolve_sides (bar[b] > board-owner[o] > deck[d] > position[p]; struggle/off_deck flag),
+  BoardTeams (owner from bar-colour sightings AND from play events via record_play).
+- game_knowledge/tv_royale_analyzer.py + data/tv_royale_watcher.py --learn: per-play
+  egocentric samples + board (egocentric-canon) + best-effort enemy placement + frames.
+- perception/tv_royale_debug.py --cycles [--board|--learn]: live visual capture; overlay
+  boxes tagged [b]/[o]/[d]/[p] + "!" (off_deck), placement rings, learned N/8 + [SR],
+  REC samples counter. Soft deck-restrict of the HAND classifier (hand_classifier.
+  _soft_pick / classify_many allowed_sets; per-hand via read_both_hands_classifier).
+- game_knowledge/cycle_tracker.py: known_cards() (given+learned deck) is the deck prior.
+  Play detection is solid (debounce + elixir/cycle gates + elixir reconciliation).
+- A TRACE log for full-replay review was OFFERED but NOT built -- add logs/tvr_trace_*.jsonl
+  (throttled per-frame: both hands+conf, both elixir, board units+side+source) if the new
+  chat wants to watch every frame's reads, not just per-play samples.
+
+STATE: everything above is UNCOMMITTED on branch experiment/detector-model-swap. Commit it
+before the new chat (it's a coherent batch: learning logger + visual capture + cross-
+education). data/learning/ is gitignored (generated dataset + frames).

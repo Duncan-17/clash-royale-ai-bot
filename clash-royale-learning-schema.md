@@ -1,6 +1,25 @@
 # Clash Royale AI — Learning Data Schema (Phase 7 → 9)
 
-Status: **DRAFT for Duncan's review**, 2026-09-11. Companion to
+Status: **IMPLEMENTED (v1) 2026-09-12** in `data/learning_logger.py` (wired into
+`game_knowledge/tv_royale_analyzer.py` + `data/tv_royale_watcher.py --learn`). Writes
+`data/learning/{games.jsonl, samples.jsonl, frames/<game>/*.jpg}`. Decisions taken
+(Duncan): egocentric self/opp with opp PRIVILEGED; per-play samples (no-op ticks
+later); position DEFERRED but a confidence-gated best-effort placement is logged when
+unambiguous; board via the detector (transfer to TV Royale still to validate live);
+raw frame archived per play + end screen. GAP: match RESULT (crowns) -- the end frame
+is archived, but parsing crowns needs an end-screen region calibration (a capture from
+Duncan), so `result` is null for now.
+
+CROSS-EDUCATION wired (the three systems teach each other): (#1) own placement is free →
+only ENEMY `action.position` is perceived; (#2) a fully-known deck soft-restricts the hand
+classifier to its 8 cards; (#3) decks + play events resolve board SIDE (resolve_sides:
+bar[b] > owner[o] > deck[d] > position[p], struggle "!" for off-deck troops). NEXT PROBLEM
+(new chat) is BOARD UNIT TRACKING — a play↔unit binding so `board.units` get card+side from
+the play (fixes shared-card mis-side + class flicker) and enemy `action.position` becomes
+exact; plus a struggle-crop review queue to retrain the detector. See Project_Status
+">>> HANDOFF: BOARD UNIT TRACKING + STRUGGLE-CROP QUEUE <<<". Original draft below.
+
+Draft (2026-09-11). Companion to
 `clash-royale-strategy-philosophy_1.md` (the *why*) and `clash-royale-ai-roadmap.md`
 Phases 7–9 (imitation → reward → RL). This doc defines the on-disk record format the
 learning sits on: what we log from every play, in what shape, and — crucially — with
