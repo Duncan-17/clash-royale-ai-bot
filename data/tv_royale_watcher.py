@@ -168,7 +168,7 @@ def watch_game(controller, capture, game, analyzer):
 
 
 def run(minutes=None, max_replays=None, arenas=1, games_per_arena=None,
-        arena_direction="next", levels=False, learn=False):
+        arena_direction="next", levels=False, learn=False, collect_board=False):
     print("Connecting to LDPlayer...")
     controller = EmulatorController()
     capture = ScreenCapture(controller)
@@ -179,15 +179,20 @@ def run(minutes=None, max_replays=None, arenas=1, games_per_arena=None,
     if learn:
         from data.learning_logger import LearningLogger
         learn_logger = LearningLogger()
+    board_collector = None
+    if collect_board:
+        from perception.board_collector import BoardCropCollector
+        board_collector = BoardCropCollector()  # bank bound/struggle crops -> review queue
     detector = None
-    if levels or learn:                         # board/placement + level badges both need it
+    if levels or learn or collect_board:        # board/placement + level badges + crops need it
         from perception.yolo_detector import YoloDetector
         detector = YoloDetector(include_non_units=True)
     analyzer = TvrAnalyzer(clf, card_collector=card_collector, detector=detector,
-                           learn_logger=learn_logger)
+                           learn_logger=learn_logger, board_collector=board_collector)
     print(f"Classifier hand reading -> dual cycle tracker (plays -> {analyzer.plays_log}); "
           f"uncertain cards -> review queue{'; troop levels -> level queue' if levels else ''}"
-          f"{'; LEARNING dataset -> data/learning/' if learn else ''}.")
+          f"{'; LEARNING dataset -> data/learning/' if learn else ''}"
+          f"{'; board crops -> ' + board_collector.queue_dir if collect_board else ''}.")
 
     watched = set()
     replays = 0
@@ -253,6 +258,9 @@ def run(minutes=None, max_replays=None, arenas=1, games_per_arena=None,
         print(f"\nStopped. Watched {replays} replay(s). Plays -> {analyzer.plays_log}; "
               f"{card_collector.saved} uncertain card(s) -> {card_collector.queue_dir} "
               f"(review: python -m perception.review_tv_hand_queue).")
+        if board_collector is not None:
+            print(f"{board_collector.saved} board crop(s) -> {board_collector.queue_dir} "
+                  f"(review: python -m perception.review_board_queue).")
 
 
 def main():
@@ -271,10 +279,15 @@ def main():
                    help="Write the LEARNING dataset (data/learning/: games.jsonl, samples.jsonl, "
                         "archived frames) -- one egocentric state->action sample per play, with "
                         "detector board + best-effort placement. Runs the detector each frame.")
+    p.add_argument("--collect-board", action="store_true",
+                   help="Bank BOARD-UNIT crops (play-bound = ground-truth label; struggle/off-deck "
+                        "= confused reads) to assets/unlabeled_board_queue/ for detector-retrain "
+                        "review (RULE #2: queues only). Runs the detector each frame. Review with "
+                        "python -m perception.review_board_queue.")
     args = p.parse_args()
     run(minutes=args.minutes, max_replays=args.max_replays, arenas=args.arenas,
         games_per_arena=args.games_per_arena, arena_direction=args.arena_direction,
-        levels=args.levels, learn=args.learn)
+        levels=args.levels, learn=args.learn, collect_board=args.collect_board)
 
 
 if __name__ == "__main__":

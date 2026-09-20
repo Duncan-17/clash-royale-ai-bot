@@ -100,6 +100,36 @@ tally. Use `model_path=assets/models/cr_yolo_v3/best.pt` to test a new model.
    `review_level_queue` (only 1–4 templates exist; the rest read `Lv?` until collected).
 4. **Archer retrain** when worth it: rebalance (cap musketeer's 12× over-rep) +
    Duncan's-emulator real data (also the lever for any residual lone-badge live gap).
-4. **Future data engine = SELF-PLAY** (Duncan's call): once the bot plays, it
+5. **Future data engine = SELF-PLAY** (Duncan's call): once the bot plays, it
    knows the card it played → auto-labels its own plays with certainty. TV Royale
    auto-labeling (scaffolded in data/) is the fallback (sparse: one unit/play).
+
+## Duncan's-emulator real data loop (BUILD B+, 2026-09-14)
+
+The "Duncan's-emulator real data" lever above is now a working loop, off the TV
+Royale play↔unit binder (`game_knowledge/play_localizer.py`): a play-BOUND unit
+carries a **ground-truth** card label, and STRUGGLE/off-deck units are exactly the
+confusable/unknown reads to relabel. Crop-level; **RULE #2** — everything queues for
+review, nothing auto-files.
+
+```
+# 1. collect real crops from your emulator (unattended, or live while watching)
+python -m data.tv_royale_watcher --minutes 120 --collect-board
+python -m perception.tv_royale_debug --cycles --collect-board   # live alternative
+
+# 2. review + label the queue (mostly Enter to accept the ground-truth label, or a
+#    number to pick from that unit's 8-card deck) → assets/board_labeled/<card>/
+python -m perception.review_board_queue
+
+# 3. build the combined dataset (labelled crops → YOLO; class idx from cr_combined_v4.yaml)
+python training/prepare_board_data.py            # → training/datasets/cr_combined_v5.yaml
+
+# 4. retrain, evaluate raw, promote only if it beats v4
+python training/finetune.py --data training/datasets/cr_combined_v5.yaml --name cr_finetune_v5
+```
+
+Confusables (archer/musketeer, goblin/spear-goblin, …) **are** in the 201-class
+taxonomy, so this targets them directly. The 7 **gap cards** (berserker, ronin,
+goblin_gang, goblin_giant, suspicious_bush, void, spirit_empress — `detected_class`
+null) can be *labelled* but not *trained* until the taxonomy is extended;
+`prepare_board_data.py` holds them aside (reported) rather than dropping them.

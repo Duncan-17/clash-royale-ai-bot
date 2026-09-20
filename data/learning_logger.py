@@ -218,10 +218,13 @@ class LearningLogger:
         cy = a["y"] if actor_side == "friendly" else 1.0 - a["y"]
         return {"x": round(a["x"], 3), "y": round(cy, 3)}
 
-    def log_play(self, play, ev, elix, units, frame, now):
+    def log_play(self, play, ev, elix, units, frame, now, placement_override=None):
         """Write one egocentric sample for `play`. ev = dual tracker per-frame dict
         {'enemy':..,'friendly':..}; elix = {'enemy':float,'friendly':float}; units =
-        raw detector units (or None); frame = the raw BGR frame."""
+        board units (or None); frame = the raw BGR frame. placement_override, when
+        given, is the EXACT canonical (self-bottom) placement from the play<->unit
+        binder (game_knowledge/play_localizer) -- it replaces the appearance heuristic
+        below for this sample (used for the acting player, i.e. enemy plays)."""
         if self.game_id is None:
             return None
         if self.t0 is None:
@@ -252,7 +255,10 @@ class LearningLogger:
                 # Placement perception is only needed for the OPPONENT -- the bot knows
                 # its own placement (self-play/live) -- so we only localize ENEMY plays;
                 # friendly-side placement comes free from the action, not perception.
-                "position": self._placement(play, actor, w, h) if actor == "enemy" else None,
+                # A binder-supplied placement (exact, from the play<->unit link) wins over
+                # the appearance heuristic when present.
+                "position": (placement_override if placement_override is not None
+                             else (self._placement(play, actor, w, h) if actor == "enemy" else None)),
                 "inferred": play.get("inferred", False),
                 "named": play.get("named", not play.get("inferred", False)),
                 "confirmed": play.get("confirmed", False),

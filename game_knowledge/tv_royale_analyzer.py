@@ -45,22 +45,27 @@ def _deck_prior(ct):
 
 class TvrAnalyzer:
     def __init__(self, clf, card_collector=None, detector=None, plays_log=PLAYS_LOG,
-                 learn_logger=None):
+                 learn_logger=None, board_collector=None):
         self.clf = clf
         self.card_collector = card_collector   # UncertainCardCollector or None
         self.detector = detector               # YoloDetector(include_non_units=True) or None
         self.plays_log = plays_log
         self.learn_logger = learn_logger       # data.learning_logger.LearningLogger or None
+        self.board_collector = board_collector # perception.board_collector.BoardCropCollector or None
         self.cycles = None
         self._logged = 0
         self.game_id = None
 
     def start_game(self, enemy_deck, friendly_deck, game_id=None):
         from data.learning_logger import BoardTeams
+        from game_knowledge.play_localizer import PlayLocalizer
         self.cycles = DualCycleTracker(enemy_deck, friendly_deck)
         self._teams = BoardTeams()          # learns card->owner from board bar-colour
+        self._localizer = PlayLocalizer()   # BUILD A: play<->unit binding (side/class/placement)
         self._logged = 0
         self.game_id = game_id
+        if self.board_collector is not None:
+            self.board_collector.set_decks(enemy_deck, friendly_deck)   # candidates per side
         if self.learn_logger is not None:
             self.learn_logger.start_game(
                 game_id, {"enemy": list(enemy_deck), "friendly": list(friendly_deck)})
@@ -82,14 +87,18 @@ class TvrAnalyzer:
         dets = self.detector.detect(frame) if self.detector is not None else None
         board_units = ([d for d in dets if d.get("raw_name") not in NON_UNIT_RAW
                         and "tower" not in (d.get("name") or "")] if dets else None)
+        resolved = None
         if board_units is not None:                         # enemy/friendly attribution (#3)
             from data.learning_logger import resolve_sides
             self._teams.observe(board_units)                # learn card->owner from bar colour
             resolve_sides(board_units, self.cycles.enemy.known_cards(),
                           self.cycles.friendly.known_cards(), teams=self._teams)
-        if self.learn_logger is not None and board_units is not None:
             h, w = frame.shape[:2]
-            self.learn_logger.observe_units(board_units, now, w, h)
+            self._localizer.update(board_units, now, w, h)  # BUILD A: stable ids + play stamps
+            resolved = self._localizer.resolved_units()
+        if self.learn_logger is not None and resolved is not None:
+            h, w = frame.shape[:2]
+            self.learn_logger.observe_units(resolved, now, w, h)
 
         # log any new plays (to the plain plays log, and the learning dataset)
         while self._logged < len(self.cycles.plays):
@@ -97,9 +106,22 @@ class TvrAnalyzer:
             self._teams.record_play(play["card"], play["side"])   # play = ground-truth owner
             self._log_play(play)
             if self.learn_logger is not None:
+                # BUILD A: bind the play to the board unit that just appeared -> stamp its
+                # side/class + exact placement; resolve AFTER binding so this sample's board
+                # shows the stamp. Binder abstains (placement None) when unclear.
+                binding = self._localizer.bind(play, now) if board_units is not None else None
+                units_for_sample = self._localizer.resolved_units() if board_units is not None else None
+                placement = binding["placement"] if binding else None
                 self.learn_logger.log_play(
-                    play, out, {"enemy": elix_e, "friendly": elix_f}, board_units, frame, now)
+                    play, out, {"enemy": elix_e, "friendly": elix_f}, units_for_sample,
+                    frame, now, placement_override=placement)
             self._logged += 1
+
+        # BUILD B: bank bound/struggle board crops for the detector-retrain review queue
+        # (RULE #2: queues only). Uses the post-bind resolved board.
+        if self.board_collector is not None and board_units is not None:
+            self.board_collector.observe(frame, self._localizer.resolved_units(),
+                                         game_id=self.game_id or "live")
 
         if self.card_collector is not None:
             self._collect_uncertain_cards(frame, enemy, friendly)

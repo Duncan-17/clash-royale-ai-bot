@@ -2069,3 +2069,130 @@ WHAT'S ALREADY BUILT (the substrate both builds sit on; all this session, TESTED
 STATE: everything above is UNCOMMITTED on branch experiment/detector-model-swap. Commit it
 before the new chat (it's a coherent batch: learning logger + visual capture + cross-
 education). data/learning/ is gitignored (generated dataset + frames).
+
+================================================================================
+>>> BUILD A DONE: PLAY<->UNIT BINDING FOR TV ROYALE (2026-09-13) <<<
+================================================================================
+The handoff's BUILD A is built + unit-tested (offline). NEW module
+game_knowledge/play_localizer.py (PlayLocalizer) binds each ground-truth play (side,
+card, ~time -- from the dual cycle tracker) to the board unit that just APPEARED and
+STAMPS it (name=card, side from the play), so card/side/placement come from the play,
+not the flickering detector. Fixes both handoff gaps:
+  #1 SHARED-CARD SIDE (dart_goblin both decks run, mis-sided) -> the play says whose.
+  #2 CLASS FLICKER (berserker read as baby_dragon) -> stamped 'berserker', struggle
+     flag cleared; sticks across the detector's wobble (same track id).
+
+HOW IT WORKS (deliberately thin, leans on the strong v4 detector + thin_tracker):
+- OWNS a perception/thin_tracker.ThinTracker on the TV Royale board (same 900x1600):
+  stable IDs by IoU + class/side/level debounce. This ALSO stabilises UNBOUND units.
+- Records each track's BIRTH (time + normalized centre). On a play, candidates = new
+  tracks born within BIND_WINDOW (3.0s) on the play side's half of the arena
+  (HALF_MARGIN 0.15 tolerates bridge plays). Selection: if the card has a detector class
+  it must match (unique) -> bind; a single new unit on the right half also binds when the
+  class wobbled; a detector-GAP troop (berserker/ronin/goblin_giant/... no detected_class)
+  binds by half+uniqueness alone. CONFIDENCE-GATED: 0 or ambiguous candidates -> ABSTAIN
+  (never guesses). DEFERRED: a play that fires a beat before its sprite is detected is
+  retried for BIND_FORWARD (1.5s).
+- Card metadata: game_knowledge/card_reference.json (category + detected_class). Only
+  TROOP/BUILDING plays bind; spells (incl. goblin_barrel/graveyard) abstain.
+- Payoff #3: enemy PLACEMENT is now EXACT (bound track's birth position, canonicalized
+  self-bottom) instead of the logger's best-effort ~1/3 heuristic.
+
+WIRED INTO BOTH pipelines (so the watcher's dataset AND the live view both benefit):
+- game_knowledge/tv_royale_analyzer.py (watcher --learn): localizer.update() each frame
+  on the resolve_sides'd board; on each play localizer.bind() -> stamped board + exact
+  placement fed to the learning sample.
+- perception/tv_royale_debug.py (--cycles --board/--learn): same, PLUS the arena overlay
+  now draws the STAMPED, tracked board -- a play-bound unit shows tag [P] + a heavier box,
+  so binding is watchable live. (draw_board tag legend updated.)
+- data/learning_logger.py: log_play() gained placement_override= (backward compatible) --
+  the binder's exact placement wins over the appearance heuristic when present. As a bonus
+  the logged board's `conf` now populates (resolved units emit `conf`, not just `confidence`).
+
+TESTS: game_knowledge/test_play_localizer.py (10 cases: #1, #2, stickiness, abstain-on-
+ambiguous, spell no-bind, wrong-half reject, placement canon, deferred bind + expiry) --
+ALL PASS. Plus an offline end-to-end smoke of the write path (localizer + resolve_sides +
+BoardTeams + LearningLogger.log_play) confirmed the mis-sided enemy dart_goblin becomes
+'self' in the enemy-actor sample with exact placement, and the frame is archived.
+
+STILL TO VALIDATE LIVE (Duncan): watch a real replay with
+  python -m perception.tv_royale_debug --cycles --board     (or --learn to also write data)
+and confirm bound units light up [P] on the RIGHT side/name -- especially a shared card
+(dart_goblin) and a gap troop (berserker). The detector-on-TV-Royale transfer itself is
+still the one unverified assumption under all of this.
+
+NEXT: BUILD B -- the STRUGGLE-CROP REVIEW QUEUE (perception/review_board_queue.py). Root
+fix for the detector's confusable/gap cards: queue struggle/off_deck crops (RULE #2: queue
+for review, never auto-file) -> label 1-of-8 by the unit's likely deck -> retrain.
+
+STATE: BUILD A is UNCOMMITTED on branch experiment/detector-model-swap (new files
+play_localizer.py + test_play_localizer.py; edits to tv_royale_analyzer.py,
+tv_royale_debug.py, learning_logger.py). A coherent batch -- commit when ready.
+
+UPDATE 2026-09-13 (later): Duncan ran a live game -- BUILD A "working well". Committed?
+still uncommitted (batched with BUILD B below).
+
+================================================================================
+>>> DETECTOR-RETRAIN DATA LOOP (BUILD B+) (2026-09-14) <<<
+================================================================================
+Direction (Duncan 2026-09-13): with BUILD A solid, the DETECTOR is the ceiling -- the
+real next step is getting the system READY FOR DATA COLLECTION + RETRAINING. Built the
+full loop: collect real board crops from Duncan's emulator -> review/label -> YOLO
+dataset -> retrain. Decisions taken with Duncan (AskUserQuestion 2026-09-14): CROP-level
+samples (fast 1-of-8 review, ships now; archived frames stay on disk so frame-level can
+come later) and collect STRUGGLE + PLAY-BOUND units (the free ground-truth corpus AND the
+targeted confusable fix). RULE #2 respected throughout: everything QUEUES for review, the
+binder's label only PRE-FILLS as a one-key-confirm suggestion; no auto-file anywhere.
+
+THREE NEW PIECES:
+- perception/board_collector.py (BoardCropCollector): banks a padded crop + JSON sidecar
+  for each BOUND unit (proposed label = the played card, ground truth) or STRUGGLE/off_deck
+  unit (detector's confused read) to assets/unlabeled_board_queue/. Once per track id;
+  per-label cap; struggle crops wait STRUGGLE_MIN_AGE frames so a play can bind them first.
+  Sidecar carries the unit's box WITHIN the crop (exact YOLO label later), its side, and the
+  8 candidate cards from that side's deck (1-of-8 review).
+- perception/review_board_queue.py (NEW): shows each crop + the numbered candidate cards +
+  the proposed label. Enter=accept / 1..N=pick / type a name / x=discard / q=quit. Files
+  confirmed crops to assets/board_labeled/<card>/ (+ sidecar). Flags a gap card (no detector
+  class) as filed-but-held. This human step is the RULE #2 gate.
+- training/prepare_board_data.py (NEW): assets/board_labeled/ -> YOLO dataset
+  training/datasets/cr_real_duncan/ + training/datasets/cr_combined_v5.yaml (= v4's synth+real
+  sources + these). card slug -> detected_class (card_reference.json) -> hyphen taxonomy name
+  -> class INDEX read from cr_combined_v4.yaml (authoritative for the current weights). HELD
+  ASIDE (reported, not dropped): gap cards (berserker/ronin/goblin_gang/goblin_giant/
+  suspicious_bush/void/spirit_empress -- detected_class null) + ambiguous multi-class cards;
+  those need a TAXONOMY EXTENSION before they can train (a separate, bigger retrain).
+
+WIRED: --collect-board on BOTH data/tv_royale_watcher.py (unattended) and
+perception/tv_royale_debug.py --cycles (live; shows a "board crops:N" counter). TvrAnalyzer
+gained board_collector=; it banks off the post-bind resolved board each frame.
+
+TESTS: perception/test_board_collector.py (collector bank/skip/dedup + the card->class index
+mapping incl. gap hold-aside) -- PASS. Offline end-to-end smoke: labelled crops -> ingest ->
+YOLO dataset with correct indices + v5 yaml (v4 dirs + duncan), berserker correctly held.
+
+THE FULL LOOP (what Duncan does):
+  1. python -m data.tv_royale_watcher --minutes 120 --collect-board     (unattended collect)
+     or  python -m perception.tv_royale_debug --cycles --collect-board   (watch + collect live)
+  2. python -m perception.review_board_queue        (label the queue: mostly Enter / a number)
+  3. python training/prepare_board_data.py          (-> cr_combined_v5.yaml)
+  4. python training/finetune.py --data training/datasets/cr_combined_v5.yaml --name cr_finetune_v5
+  5. evaluate raw (perception/detector_view.py, point model_path at the new best.pt); promote to
+     yolo_detector.DEFAULT_MODEL only if it beats v4.
+
+CONFUSABLES (archer/musketeer, goblin/spear-goblin, dart_goblin, etc.) ARE in the 201-class
+taxonomy -> retraining with Duncan's-emulator crops directly targets them. GAP cards are NOT
+classes yet -> the review tool still lets Duncan LABEL them (kept in board_labeled/), ingest
+holds them until someone extends the taxonomy + retrains from a yolov8l base with the new
+names (bigger job; not in this batch).
+
+NEXT (options, Duncan's call): (a) collect a batch + do the first cr_finetune_v5 retrain and
+see if archers/confusables improve on his emulator; (b) frame-level labelling later (archived
+frames already saved) for RECALL, not just per-crop classification; (c) taxonomy extension for
+the 7 gap cards; (d) the self-play data engine once the bot plays live (own-play ground truth).
+
+STATE: BUILD A + this data loop are one UNCOMMITTED batch on experiment/detector-model-swap.
+New: play_localizer.py, test_play_localizer.py, board_collector.py, review_board_queue.py,
+prepare_board_data.py, test_board_collector.py. Edits: tv_royale_analyzer.py, tv_royale_debug.py,
+tv_royale_watcher.py, learning_logger.py. Generated data (queues/labeled/datasets) per .gitignore
++ the existing committed-queue convention.

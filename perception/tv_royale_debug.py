@@ -37,6 +37,7 @@ from config import tv_royale_regions as R
 from config import tv_royale_decks as TVD
 from config.tv_royale_decks import restricted_templates, combined_cards
 from data.learning_logger import resolve_sides, BoardTeams
+from game_knowledge.play_localizer import PlayLocalizer
 from game_knowledge.tv_royale_cycles import DualCycleTracker, CLASSIFIER_CONF_THRESHOLD
 from perception.card_detector import load_templates
 from perception.overlay import draw_box, draw_label, _alpha_rect
@@ -251,6 +252,7 @@ class CyclesValidator:
         self.offdeck = {}   # card -> count of high-conf reads not in that hand's deck
         self.recent_placements = []
         self.teams = BoardTeams()   # learns card->owner side from board bar-colour
+        self.localizer = PlayLocalizer()   # BUILD A: play<->unit binding (side/class/placement)
         if self.logger is not None:
             gid = datetime.now().strftime("%H%M%S")
             self.logger.start_game(gid, {"enemy": self.enemy_deck, "friendly": self.friendly_deck})
@@ -271,9 +273,14 @@ class CyclesValidator:
     def observe(self, data, now, frame=None, units=None):
         if self.t0 is None:
             self.t0 = now
-        if self.logger is not None and frame is not None and units is not None:
+        resolved = None
+        if units is not None and frame is not None:
             h, w = frame.shape[:2]
-            self.logger.observe_units(units, now, w, h)   # track appearances for placement
+            self.localizer.update(units, now, w, h)   # BUILD A: stable ids + play stamps
+            resolved = self.localizer.resolved_units()
+        if self.logger is not None and resolved is not None:
+            h, w = frame.shape[:2]
+            self.logger.observe_units(resolved, now, w, h)   # track appearances for placement
         self.last_ev = self.tracker.update(
             data["enemy"], data["friendly"], data["elix_e"], data["elix_f"], now)
         self._tally_offdeck(data["enemy"], self.tracker.enemy)
@@ -283,13 +290,21 @@ class CyclesValidator:
             self.teams.record_play(play["card"], play["side"])   # play = ground-truth owner
             self._emit(play)
             if self.logger is not None and frame is not None:
-                self._log_learn(play, data, units, frame, now)
+                # BUILD A: bind the play, then resolve so the sample's board is stamped.
+                binding = self.localizer.bind(play, now) if resolved is not None else None
+                self._log_learn(play, data, self.localizer.resolved_units() if resolved is not None
+                                else None, frame, now, binding)
             self.logged += 1
 
-    def _log_learn(self, play, data, units, frame, now):
+    def board_units(self):
+        """The localizer's current stamped board (for the arena overlay), or []."""
+        return self.localizer.resolved_units()
+
+    def _log_learn(self, play, data, units, frame, now, binding=None):
+        placement = binding["placement"] if binding else None
         sample = self.logger.log_play(
             play, self.last_ev, {"enemy": data["elix_e"], "friendly": data["elix_f"]},
-            units, frame, now)
+            units, frame, now, placement_override=placement)
         if not sample:
             return
         pos = sample["action"].get("position")
@@ -346,16 +361,20 @@ class CyclesValidator:
 def draw_board(display, units):
     """Overlay the detector's units on the arena, colored by side (blue=ally/bottom,
     red=enemy/top). The label shows the side SOURCE so the cross-education is visible:
+      [P]=stamped by the PLAY it was bound to (side+class ground truth, BUILD A)
       [b]=bar colour (damaged, reliable)  [o]=owner learned from earlier bar-colour
       sightings of this card  [d]=deck prior (card in one deck)  [p]=position guess only
-      [?]=side unknown. A trailing ! marks off_deck / struggle (name not in the match)."""
+      [?]=side unknown. A trailing ! marks off_deck / struggle (name not in the match).
+    A play-bound box is drawn heavier so the localization is easy to spot."""
     for u in units:
         side = u.get("side")
         col = FRI_COL if side == "ally" else (ENE_COL if side == "enemy" else (150, 150, 150))
         src = u.get("side_source")
-        tag = {"deck": "d", "position": "p", "board": "o"}.get(src, "b" if side in ("enemy", "ally") else "?")
+        tag = {"play": "P", "deck": "d", "position": "p", "board": "o"}.get(
+            src, "b" if side in ("enemy", "ally") else "?")
         label = f"{u.get('name', '')} [{tag}]" + ("!" if u.get("off_deck") else "")
-        draw_box(display, u["bbox"], col, label=label, radius=4, thickness=2)
+        draw_box(display, u["bbox"], col, label=label, radius=4,
+                 thickness=3 if u.get("bound") else 2)
 
 
 def draw_placements(display, placements, now, ttl=3.0):
@@ -439,6 +458,11 @@ def main():
                    help="--cycles: also WRITE the learning dataset (data/learning/) while you "
                         "watch -- one egocentric state->action sample per play, with detector "
                         "board + best-effort placement + archived frame. Implies --board.")
+    p.add_argument("--collect-board", action="store_true",
+                   help="--cycles: bank BOARD-UNIT crops (play-bound = ground truth; struggle = "
+                        "confused reads) to assets/unlabeled_board_queue/ for detector-retrain "
+                        "review (RULE #2: queues only). Implies --board. Review with "
+                        "python -m perception.review_board_queue.")
     args = p.parse_args()
 
     templates = cap_templates(restricted_templates(load_templates()), args.match_examples)
@@ -492,8 +516,8 @@ def main():
                       "config/tv_royale_decks.py (guesses are then best-of-16).")
     # --board / --learn (cycles only): run the detector for the arena overlay, and
     # --learn additionally writes the learning dataset while you watch.
-    detector = learn_logger = None
-    want_board = args.cycles and (args.board or args.learn)
+    detector = learn_logger = board_collector = None
+    want_board = args.cycles and (args.board or args.learn or args.collect_board)
     if want_board:
         from perception.yolo_detector import YoloDetector
         detector = YoloDetector(include_non_units=True)
@@ -502,6 +526,11 @@ def main():
         from data.learning_logger import LearningLogger
         learn_logger = LearningLogger()
         print("LEARN on: writing data/learning/ (samples + archived frames) while watching.")
+    if args.cycles and args.collect_board:
+        from perception.board_collector import BoardCropCollector
+        board_collector = BoardCropCollector()
+        print(f"COLLECT-BOARD on: banking bound/struggle crops -> {board_collector.queue_dir} "
+              f"(review: python -m perception.review_board_queue).")
     validator = CyclesValidator(logger=learn_logger) if args.cycles else None
     if validator:
         print("CYCLES validation live. Watch the replay; each PLAY prints here + shows in the "
@@ -538,12 +567,22 @@ def main():
                     validator.teams.observe(units)
                     resolve_sides(units, validator.tracker.enemy.known_cards(),
                                   validator.tracker.friendly.known_cards(), teams=validator.teams)
-                    draw_board(display, units)
                 if in_match:
                     validator.observe(data, now, frame, units)
+                    if board_collector is not None:
+                        board_collector.set_decks(validator.enemy_deck, validator.friendly_deck)
+                        board_collector.observe(frame, validator.board_units(),
+                                                game_id=str(validator.t0))
+                if units is not None:
+                    # In-match: draw the localizer's STAMPED, tracked board (a play-bound
+                    # unit shows [P] + a heavier box); pre-match: the raw resolved reads.
+                    draw_board(display, validator.board_units() if in_match else units)
                 draw_placements(display, validator.recent_placements, now)
                 if learn_logger is not None:
                     cv2.putText(display, f"REC learn samples:{learn_logger.samples}", (10, 60),
+                                FONT, 0.7, PLACE_COL, 2, cv2.LINE_AA)
+                if board_collector is not None:
+                    cv2.putText(display, f"board crops:{board_collector.saved}", (10, 86),
                                 FONT, 0.7, PLACE_COL, 2, cv2.LINE_AA)
                 display = np.hstack([cycles_panel(validator, data, in_match, display.shape[0]),
                                      display])
