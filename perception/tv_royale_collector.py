@@ -147,16 +147,24 @@ class UncertainCardCollector:
         cur = to_gray(crop)
         return float(cv2.matchTemplate(cur, prev, cv2.TM_CCOEFF_NORMED)[0][0]) > DEDUP_THRESHOLD
 
-    def observe(self, slot_key, card, score, is_selected, crop):
-        """Feed one slot's classifier read. Banks the crop iff the classifier is
-        UNSURE (score < conf_below). is_selected is accepted for signature-compat
-        with HandCropCollector but ignored (selection handling was removed)."""
-        if card in (None, "UNKNOWN") or score >= self.conf_below or crop.size == 0:
+    def observe(self, slot_key, card, score, is_selected, crop, off_deck=False):
+        """Feed one slot's classifier read. Banks the crop iff the classifier is UNSURE
+        (score < conf_below) OR the read is OFF-DECK (off_deck=True: a confident card in
+        NEITHER player's known deck -- almost always a misread of a card the classifier
+        doesn't know, e.g. a new/evo card outside its vocabulary). Off-deck banks BYPASS
+        the per-card cap, so an unknown card isn't blocked by a saturated common class;
+        dedup + throttle still bound them. is_selected is accepted for signature-compat
+        with HandCropCollector but ignored."""
+        if card in (None, "UNKNOWN") or crop.size == 0:
+            return None
+        if not (off_deck or score < self.conf_below):
             return None
         now = time.time()
         if now - self._last_t.get(slot_key, 0.0) < self.throttle_s:
             return None
-        if self._counts.get(card, 0) >= self.cap_per_card or self._is_dup(slot_key, crop):
+        if self._is_dup(slot_key, crop):
+            return None
+        if not off_deck and self._counts.get(card, 0) >= self.cap_per_card:
             return None
         self._last_t[slot_key] = now
         path = os.path.join(

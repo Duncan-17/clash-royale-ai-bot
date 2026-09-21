@@ -5,6 +5,9 @@ turned into detector training data by training/prepare_board_data.py and folded
 into the next YOLO retrain -- the loop that fixes the detector's confusable/gap
 cards with real frames from YOUR emulator.
 
+A YELLOW box is drawn around the exact unit being labelled (from the sidecar's
+crop_box), so a crop with several troops near the centre is unambiguous.
+
 Deck knowledge makes labelling a 1-of-8 pick, not 1-of-150 (systems educate each
 other): each crop shows the CANDIDATE cards from the unit's side's deck as a
 numbered list, plus the collector's PROPOSED label:
@@ -52,12 +55,22 @@ def _resolve(name, known):
     return None, difflib.get_close_matches(name, known, n=5, cutoff=0.6)
 
 
-def _show(img):
+TARGET_BOX = (0, 235, 235)   # yellow (BGR): the exact unit being labelled
+
+def _show(img, box=None):
+    """Show the crop, zoomed, with a yellow box around the UNIT being labelled (from
+    the sidecar's crop_box) so a crop with several troops near the centre is
+    unambiguous. Drawn on a copy -- the crop filed on accept stays unboxed."""
     h, w = img.shape[:2]
     s = DISPLAY_MAX / max(h, w)
-    if s > 1:
-        img = cv2.resize(img, (int(w * s), int(h * s)), interpolation=cv2.INTER_NEAREST)
-    cv2.imshow("Review board crop (look here, answer in the terminal)", img)
+    disp = cv2.resize(img, (int(w * s), int(h * s)), interpolation=cv2.INTER_NEAREST) if s > 1 else img.copy()
+    if box:
+        H, W = disp.shape[:2]
+        cx, cy, bw, bh = box
+        x1, y1 = int((cx - bw / 2) * W), int((cy - bh / 2) * H)
+        x2, y2 = int((cx + bw / 2) * W), int((cy + bh / 2) * H)
+        cv2.rectangle(disp, (x1, y1), (x2, y2), TARGET_BOX, 2)
+    cv2.imshow("Review board crop -- YELLOW box = the unit to label (answer in terminal)", disp)
     cv2.waitKey(1)
 
 
@@ -99,7 +112,7 @@ def main():
         kind = meta.get("kind", "?")
         side = meta.get("side", "?")
         cands = meta.get("candidates") or []
-        _show(img)
+        _show(img, meta.get("crop_box"))   # yellow box marks the exact unit being labelled
 
         opts = "  ".join(f"[{j}] {c}" for j, c in enumerate(cands, 1))
         prop_slug, _ = _resolve(proposed, known)

@@ -2298,3 +2298,19 @@ mainly mislabeled the logged deck metadata + review candidate lists + deck prior
 re-enable now. STATE: UNCOMMITTED (edits: cycle_tracker.py, play_localizer.py, learning_logger.py,
 tv_royale_watcher.py + the board-filter + swarm/clean-view batch already committed as 6a67da1).
 NEXT: keep collecting board crops; sort the 3 queues; crown/result calibration still needs a capture.
+
+UPDATE 2026-09-21 (later): (1) review_board_queue now draws a YELLOW box around the exact unit being
+labelled (from the sidecar crop_box) -- disambiguates crops with several troops near the centre;
+works retroactively (existing crops already store crop_box). (2) OFF-DECK HAND COLLECTION added:
+UncertainCardCollector.observe(off_deck=) + tv_royale_analyzer._collect_uncertain_cards now bank a
+CONFIDENT hand read whose card is in NEITHER player's known deck (a card the classifier likely
+doesn't know -- new/evo outside its 122 vocab), gated on the full 8-card deck being known, and
+BYPASSING the per-card cap so an unknown isn't blocked by a saturated common class (dedup+throttle
+still bound it). Before this the collector only banked LOW-conf reads, so a confidently-misread
+unknown card slipped through. Tested. (3) Wiped board(651) + level(400) queues for a fresh boxed
+collection; hand queue KEPT (1065 crops, 28 cards at cap) -- the off-deck cap-bypass means the
+saturation no longer blocks unknown-card collection, so no wipe needed there.
+CAVEAT: review_tv_hand_queue only FILES under EXISTING card slugs (assets/hand_templates dirs). A
+truly NEW card (outside the 122) can be collected but not yet labelled under a new name -> needs a
+review-tool tweak + a hand-classifier retrain to fully add it (not built).
+STATE: UNCOMMITTED (edits: review_board_queue.py, tv_royale_collector.py, tv_royale_analyzer.py).

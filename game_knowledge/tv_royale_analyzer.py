@@ -131,11 +131,19 @@ class TvrAnalyzer:
         return out
 
     def _collect_uncertain_cards(self, frame, enemy, friendly):
-        for side, reads, slots in (("enemy", enemy, R.enemy_hand_slots()),
-                                   ("friendly", friendly, R.friendly_hand_slots())):
+        # off-deck signal: a confident read of a card in NEITHER of this player's known
+        # (given + learned) deck cards is likely a card the classifier doesn't know -- bank
+        # it for review. Only trusted once the full 8-card deck is known, so we don't flag
+        # everything before the deck is learned.
+        e_known, f_known = self.cycles.enemy.known_cards(), self.cycles.friendly.known_cards()
+        for side, reads, slots, known in (("enemy", enemy, R.enemy_hand_slots(), e_known),
+                                          ("friendly", friendly, R.friendly_hand_slots(), f_known)):
+            off_ok = len(known) >= RESTRICT_MIN
             for i, (box, rd) in enumerate(zip(slots, reads)):
                 x1, y1, x2, y2 = box
-                self.card_collector.observe((side, i), rd.card, rd.score, False, frame[y1:y2, x1:x2])
+                off = off_ok and rd.card not in (None, "UNKNOWN") and rd.card not in known
+                self.card_collector.observe((side, i), rd.card, rd.score, False,
+                                            frame[y1:y2, x1:x2], off_deck=off)
 
     def _collect_unknown_levels(self, frame, dets):
         from perception.level_reader import queue_level_crop, read_level
