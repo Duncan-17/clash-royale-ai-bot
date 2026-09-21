@@ -2286,6 +2286,15 @@ elixir cross-check), (2) BUILD A -- spawns_trackable_unit/detected_classes misse
 all three (cycle_tracker._cost_key, play_localizer._ref, learning_logger._card_matches_unit strips
 '-' too); underscore stays canonical, no template rename/retrain. Verified: cost=6, binds as x_bow
 building, matches. Only 'mirror' legitimately lacks a fixed cost (by design). Takes effect next run.
-STATE: UNCOMMITTED (edits: cycle_tracker.py, play_localizer.py, learning_logger.py + the board-filter
-+ swarm/clean-view batch). NEXT: keep collecting board crops; sort the 3 queues; fix the deck->side
-mirror before re-enabling --learn; crown/result calibration still needs a capture.
+DECK->SIDE MIRROR FIXED (2026-09-21): diagnosed CONSTANT across the 2 determinable games (12821,
+23501 both mirrored the same way; the 5 old games were indeterminate -- named cards in neither logged
+deck). Root cause: watch_game mapped list-LEFT->enemy(top)/RIGHT->friendly(bot), but it's the reverse.
+Swapped to enemy=right_deck, friendly=left_deck (data/tv_royale_watcher.py). enemy/friendly still mean
+top/bottom; only which list deck seeds each side changed. Added _warn_if_side_mirrored(): a post-game
+cross-check of the enemy seed deck vs each HAND REGION's learn_deck-observed cards -> prints a WARNING
+if a future game disagrees (guards against the mapping not being constant). Verified against 12821.
+NOTE: play NAMING + SIDE were already mostly right (hand-region geometry + learn_deck), so the mirror
+mainly mislabeled the logged deck metadata + review candidate lists + deck priors; --learn is safe to
+re-enable now. STATE: UNCOMMITTED (edits: cycle_tracker.py, play_localizer.py, learning_logger.py,
+tv_royale_watcher.py + the board-filter + swarm/clean-view batch already committed as 6a67da1).
+NEXT: keep collecting board crops; sort the 3 queues; crown/result calibration still needs a capture.

@@ -142,13 +142,37 @@ def analyze_match(capture, analyzer):
     return analyzer.play_count - plays_start
 
 
+def _warn_if_side_mirrored(analyzer, enemy_deck, friendly_deck):
+    """Cross-check the deck->side assignment against what each HAND REGION actually
+    learned this game (learn_deck): the enemy(top) seed deck should overlap the top
+    hand's observed deck more than the bottom's. If it's the other way round, the
+    left/right->side mapping wasn't constant after all -- flag it so the swap can be
+    revisited rather than silently logging side-swapped data."""
+    ct = getattr(analyzer, "cycles", None)
+    if ct is None:
+        return
+    e_obs = set(getattr(ct.enemy, "observed_deck", []))
+    f_obs = set(getattr(ct.friendly, "observed_deck", []))
+    if len(e_obs) + len(f_obs) < 4:      # too little learned to judge
+        return
+    e_given = set(enemy_deck)
+    if len(e_given & f_obs) > len(e_given & e_obs):
+        print("  WARNING: deck->side may be MIRRORED this game -- the enemy(top) deck "
+              "matches the BOTTOM hand's learned cards. If this recurs, the list "
+              "left/right->side mapping isn't constant; auto-detect is needed.")
+
+
 def watch_game(controller, capture, game, analyzer):
     """Tap into one game, analyze it, and return to a clean list. Returns plays
     detected (or None if the replay never started)."""
-    # DECK->SIDE mapping ASSUMPTION (validate live): list left = top = enemy,
-    # right = bottom = friendly. If the cycles come out mirrored, swap these.
-    enemy_deck = [c for c, _ in game["left_deck"]]
-    friendly_deck = [c for c, _ in game["right_deck"]]
+    # DECK->SIDE mapping (CORRECTED 2026-09-21): the list's RIGHT deck is the TOP
+    # (enemy) player, LEFT is the BOTTOM (friendly) player. The original left=enemy
+    # assumption came out MIRRORED on every game we could check (the top player's plays
+    # were all right-deck cards -- games 12821/23501). enemy/friendly still mean top/
+    # bottom; only WHICH list deck seeds each side is swapped. The post-game check below
+    # flags it if a future game disagrees (i.e. if the mapping ever isn't constant).
+    enemy_deck = [c for c, _ in game["right_deck"]]
+    friendly_deck = [c for c, _ in game["left_deck"]]
     gid = f"{abs(hash(deck_signature(game))) % 100000:05d}"
     analyzer.start_game(enemy_deck, friendly_deck, game_id=gid)
 
@@ -159,6 +183,7 @@ def watch_game(controller, capture, game, analyzer):
         open_tv_royale(controller, capture)  # recover to a known screen
         return None
     plays = analyze_match(capture, analyzer)
+    _warn_if_side_mirrored(analyzer, enemy_deck, friendly_deck)
     # Replay ended -> tap OK through the transition screens back to the list
     # (same scroll position, just-watched game centered).
     if not return_to_list(controller, capture):
