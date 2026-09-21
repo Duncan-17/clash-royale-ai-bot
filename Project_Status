@@ -2191,8 +2191,101 @@ see if archers/confusables improve on his emulator; (b) frame-level labelling la
 frames already saved) for RECALL, not just per-crop classification; (c) taxonomy extension for
 the 7 gap cards; (d) the self-play data engine once the bot plays live (own-play ground truth).
 
-STATE: BUILD A + this data loop are one UNCOMMITTED batch on experiment/detector-model-swap.
-New: play_localizer.py, test_play_localizer.py, board_collector.py, review_board_queue.py,
-prepare_board_data.py, test_board_collector.py. Edits: tv_royale_analyzer.py, tv_royale_debug.py,
-tv_royale_watcher.py, learning_logger.py. Generated data (queues/labeled/datasets) per .gitignore
-+ the existing committed-queue convention.
+STATE: BUILD A + this data loop were COMMITTED 2026-09-20 as e23ca3a ("Play<->unit binding
+(BUILD A) + detector-retrain data loop") on experiment/detector-model-swap. Files:
+play_localizer.py, test_play_localizer.py, board_collector.py, review_board_queue.py,
+prepare_board_data.py, test_board_collector.py + edits to tv_royale_analyzer.py, tv_royale_debug.py,
+tv_royale_watcher.py, learning_logger.py. Generated data (queues/labeled/datasets) per .gitignore.
+
+================================================================================
+>>> RESEARCH: existing YOLO training resources (2026-09-20) <<<
+================================================================================
+Before more manual collection, searched for existing datasets / weights / techniques (full
+notes in chat). Findings: NO turnkey dataset covers OUR need (Duncan's-emulator look + the 7
+gap cards; a Dec-2025 freelance post asking to BUILD such a dataset confirms this). Useful:
+- Public labeled detection sets on Roboflow (YOLO-exportable, licenses vary): Nejc Zavodnik
+  ~1300 imgs / 107 classes / Feb-2025 + pretrained (best real-data find); MinesBot ~6678 imgs
+  (BuildABot's set); microbio (Oct-2025); + KataCR's own (already used).
+- Sprites for the gap cards + evolutions come from APK .sc extraction (Supercell-Extractor,
+  CR-SC-Dump, sc_extract) / repos (smlbiobot/cr-assets-png) / official fankit -> feed our
+  SYNTHETIC generator (the only way to ADD gap-card classes without manual box-labelling).
+- KataCR's method (arxiv 2504.04783): ~4654 SAM-cut sprites -> 20k synthetic imgs + 6939 real
+  val; AI-assisted iterative labelling (model pre-labels new video, human corrects). Our
+  BUILD B loop is exactly this pattern -> not wasted, it's the last mile for the domain gap.
+RECOMMENDED ORDER (Duncan's call): (1) extend the synthetic generator with current sprites
+(highest leverage; adds gap-card CLASSES for free) -> (2) fold in Nejc's set after taxonomy
+mapping -> (3) manual BUILD-B collection for the emulator domain gap on confusables.
+
+================================================================================
+>>> SWARM GROUPING (Option 1) (2026-09-20) <<<
+================================================================================
+Post-process swarm grouping built + tested. perception/swarm_grouper.py: group_swarms(units)
+collapses a cluster of nearby same-class+side SWARM units (skeleton/goblin/spear_goblin/bat/
+minion/barbarian/elite_barbarian/guard/rascal_*/royal_recruit/royal_hog) into ONE group entity
+{name, side, union bbox, count, hp mean, min-member id, group:True}. Union-find; adjacency scales
+with box size (GROUP_FACTOR=1.5); clusters below MIN_GROUP(=2) and non-swarm classes pass through
+UNCHANGED. Pure + framework-agnostic -- runs on thin_tracker (live) OR play_localizer.resolved_units
+(TVR) dicts. NOT a detector change (YOLO still detects individuals; small-unit recall already fine)
+and NON-LOSSY (callers keep both views). Chosen over training a group class (which is lossy +
+conflicts with KataCR real-data's per-skeleton labels) -- see chat 2026-09-20.
+WIRED: game_knowledge/game_state.py -> GameState.groups (blob view) alongside .units (individuals),
++ enemy_groups()/ally_groups(); perception/detector_view.py --group (implies --track): overlay +
+panel show "name xN" with a heavier box for a group. TEST: perception/test_swarm_grouper.py (7
+cases) PASS; offline render smoke PASS; test_policy still PASS.
+Also this session (Duncan 2026-09-20): detector_view.py now defaults to a CLEAN overlay --
+only troop box + name; the per-troop system internals (health `bar` / `bar-level` / `clock`
+boxes + the LvN/Lv? plate) that stacked 2-3 labels on every unit are hidden unless --detailed.
+(Side/HP/level still read + shown in the side panel regardless.) annotate() gained a `detailed`
+arg; --detailed added.
+STATE: UNCOMMITTED (new: swarm_grouper.py, test_swarm_grouper.py; edits: game_state.py,
+detector_view.py). NEXT: Duncan validates --group / clean view live, then flesh out TV Royale training.
+
+================================================================================
+>>> TV ROYALE POLISH -- board-unit filter fix (2026-09-20) <<<
+================================================================================
+Started checking/polishing the TVR learning system. AUDITED the existing data/learning/
+(195 samples / 5 games / 200 frames -- but PRE-BUILD-A, dated Sep 12): plays healthy
+(cost 195/195, 180 confirmed, sensible cards), BUT result=null on all games (crown parsing
+still a stub), placement only ~27% of enemy plays (pre-binding), and the board was polluted
+-- avg 14.5 "units"/sample, 54% side=unknown -- largely by TOWERS being logged as units.
+
+FIXED a real CURRENT bug in the board-unit filter (both tv_royale_analyzer + tv_royale_debug):
+the old filter `raw_name not in {small set} and "tower" not in name` (a) LEAKED emote / text /
+elixir / selected / skeleton-king-bar into board.units as fake troops, and (b) WRONGLY DROPPED
+the real buildings bomb_tower / inferno_tower (their name contains "tower"). Now both filter on
+perception/yolo_detector.NON_UNIT_CLASSES (promoted to a shared module-level constant = the
+detector's authoritative non-unit set). Verified: emote/text/elixir/selected/skeleton-king-bar +
+towers/bars DROPPED; bomb_tower/inferno_tower + troops KEPT. Tests still pass.
+STATE: UNCOMMITTED (edits: yolo_detector.py [+NON_UNIT_CLASSES], tv_royale_analyzer.py,
+tv_royale_debug.py). NEXT (Duncan): run ONE fresh `python -m data.tv_royale_watcher --minutes 30
+--learn` on current code -> re-audit data/learning/ (expect: no towers/UI in board, gap cards
+NAMED not "unknown", side unknown << 54%, placement >> 27%; result still null). Then a TVR
+END-SCREEN capture from Duncan -> calibrate the crown/result region (RULE #1: mark + confirm).
+
+UPDATE 2026-09-21: fresh --learn run AUDITED (game 12821): board is CLEAN now (0 tower/UI leak,
+side 0% unknown vs 54%, avg 5.3 units/sample) -- the filter fix + BUILD A work. BUT that game's
+PLAYS came out mirrored (enemy/friendly swapped -- enemy "played" friendly-deck cards) and 100%
+elixir-inferred + ~52% unnamed: the watcher's LIST deck->side auto-read mis-assigned sides. The
+live `tv_royale_debug --cycles` view (MANUAL/learned decks) reads fine, so the bug is the watcher's
+list-read side mapping, not the core. Deck->side mirror is STILL OPEN (corrupts --learn imitation
+side labels + swaps review candidate lists; does NOT block crop collection). RECALL SIGNAL from the
+old data: wizard (0 dets/8 plays) + knight (2/14) are under-detected/misclassified; berserker is a
+gap card -> priority crops.
+
+--collect-board VALIDATED: banks struggle+bound board crops (assets/unlabeled_board_queue/, 26 in a
+2-game run: baby_dragon/dark_prince/... struggle). Note the three review streams and their flags:
+levels (auto w/ detector) -> unlabeled_level_queue; uncertain HAND cards (auto) -> unlabeled_tv_hand_queue;
+struggle BOARD troops (--collect-board) -> unlabeled_board_queue. `--collect-board` alone runs the
+detector so it captures ALL THREE (skip --learn for now to avoid the mirror).
+
+X-BOW SLUG BUG FIXED (Duncan reported "no xbox card cost"): X-Bow's slug diverges -- deck/hand use
+'x-bow' (assets/hand_templates/x-bow) but card_reference + cost table + detector class use 'x_bow'
+(underscore). This broke (1) cost lookup ("no elixir cost" warning + x-bow plays never passing the
+elixir cross-check), (2) BUILD A -- spawns_trackable_unit/detected_classes missed it so an x-bow
+(a BUILDING) never bound/collected, (3) side/placement loose-matching. Fixed hyphen-tolerantly at
+all three (cycle_tracker._cost_key, play_localizer._ref, learning_logger._card_matches_unit strips
+'-' too); underscore stays canonical, no template rename/retrain. Verified: cost=6, binds as x_bow
+building, matches. Only 'mirror' legitimately lacks a fixed cost (by design). Takes effect next run.
+STATE: UNCOMMITTED (edits: cycle_tracker.py, play_localizer.py, learning_logger.py + the board-filter
++ swarm/clean-view batch). NEXT: keep collecting board crops; sort the 3 queues; fix the deck->side
+mirror before re-enabling --learn; crown/result calibration still needs a capture.

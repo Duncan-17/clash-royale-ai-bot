@@ -1,9 +1,11 @@
 """The live/eval view for OUR detector -- the honest picture of what the detector
 sees, plus the THIN stack we actually keep (no old compensation heuristics).
 
-Default: raw detections only (units + bars/levels/clocks/towers), coloured by side
-(ally=blue / enemy=red from bar colour + a river-position seed, unknown=amber),
-components in cyan -- the clean way to judge a model.
+Default: a CLEAN view -- just each troop's box + name, coloured by side (ally=blue /
+enemy=red from bar colour + a river-position seed, unknown=amber). The per-troop system
+internals (the health `bar`, `bar-level`, `clock` boxes + the LvN/Lv? plate) are hidden
+so the view isn't 2-3 labels deep on every unit; add --detailed to draw them. (Side/HP
+are still read from those internally regardless of whether they're drawn.)
 
 --track layers on the RELIABLE, cheap thin stack: perception/thin_tracker.py
 (stable IDs, class debounce, sticky side/level, HP) + tower alive/HP from the
@@ -20,6 +22,8 @@ or cost too much (Duncan 2026-09-10):
 Usage:
     python -m perception.detector_view                 # LIVE, raw detector output
     python -m perception.detector_view --track         # + thin tracker + tower/game panel
+    python -m perception.detector_view --group         # collapse swarms (Skeleton Army -> skeleton xN)
+    python -m perception.detector_view --detailed      # also draw bars/levels/clocks (the busy view)
     python -m perception.detector_view --track --profile   # per-stage ms every 30 frames
     python -m perception.detector_view --static        # one frame from test_screenshot.png
     python -m perception.detector_view --model assets/models/cr_yolo_v3/best.pt  # a specific model
@@ -32,6 +36,7 @@ import cv2
 import numpy as np
 
 from perception.overlay import draw_box, _alpha_rect
+from perception.swarm_grouper import group_swarms
 
 ALLY = (255, 150, 60)       # blue
 ENEMY = (60, 60, 255)       # red
@@ -115,20 +120,29 @@ def _side_color(d):
     return {"ally": ALLY, "enemy": ENEMY}.get(d.get("side", "unknown"), UNKNOWN)
 
 
-def annotate(frame, dets):
+def annotate(frame, dets, detailed=False):
+    """Draw the detections. By DEFAULT only troops (box + name/side) are drawn -- the
+    per-troop system internals (the health `bar`, `bar-level` and `clock` boxes, plus
+    the LvN/Lv? plate) stack 2-3 labels on every unit and make it hard to see whether
+    the detector's working. --detailed brings them back."""
     disp = frame.copy()
     counts = {"ally": 0, "enemy": 0, "unknown": 0, "component": 0}
     for d in dets:
         if _is_component(d):
-            color = COMPONENT
             counts["component"] += 1
-            draw_box(disp, d["bbox"], color, label=f"{d['name']} {d['confidence']:.2f}")
+            if not detailed:      # bars/levels/clocks/tower-UI are system internals -> hidden
+                continue          #   by default; --detailed shows them
+            draw_box(disp, d["bbox"], COMPONENT, label=f"{d['name']} {d['confidence']:.2f}")
             continue
         color = _side_color(d)
         counts[d.get("side") if d.get("side") in ("ally", "enemy") else "unknown"] += 1
         tag = f"#{d['id']} " if "id" in d else ""
-        draw_box(disp, d["bbox"], color, label=f"{tag}{d['name']} {d['confidence']:.2f}")
-        _draw_level_tag(disp, d["bbox"], d.get("level"), d.get("has_badge"))  # gold plate below box
+        cnt = f" x{d['count']}" if d.get("count", 1) > 1 else ""   # swarm group -> show the count
+        conf = f" {d['confidence']:.2f}" if d.get("confidence") is not None else ""
+        draw_box(disp, d["bbox"], color, label=f"{tag}{d['name']}{cnt}{conf}",
+                 thickness=3 if d.get("group") else 2)             # heavier box marks a group
+        if detailed:              # the per-troop level plate is detail too (level is in the panel)
+            _draw_level_tag(disp, d["bbox"], d.get("level"), d.get("has_badge"))
     header = (f"{len(dets)} dets  ally:{counts['ally']} enemy:{counts['enemy']} "
              f"unk:{counts['unknown']} comp:{counts['component']}")
     _alpha_rect(disp, (0, 0), (disp.shape[1], 30), (20, 20, 20), 0.6)
@@ -199,8 +213,10 @@ def _draw_section(panel, key, rows):
 
 
 def _urow(u):
-    # fixed columns so values don't jitter horizontally (RULE 1): name | level | hp
-    return f"{u['name'][:13]:13} {_lvl(u.get('level'), u.get('has_badge'))} {_hp(u.get('hp'))}"
+    # fixed columns so values don't jitter horizontally (RULE 1): name(+count) | level | hp
+    cnt = f" x{u['count']}" if u.get("count", 1) > 1 else ""   # swarm group -> keep the count visible
+    name = (u["name"][:13 - len(cnt)] + cnt) if cnt else u["name"][:13]
+    return f"{name:13} {_lvl(u.get('level'), u.get('has_badge'))} {_hp(u.get('hp'))}"
 
 
 def game_panel(units, tower_info, plays, height):
@@ -300,7 +316,8 @@ def _lap(on, key, t0):
 
 
 def render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel=None,
-                 collect_levels=False, play_tracker=None, profile=False):
+                 collect_levels=False, play_tracker=None, profile=False, group=False,
+                 detailed=False):
     t = time.perf_counter()
     raw = ui_filter(det.detect(frame))
     t = _lap(profile, "detect", t)
@@ -312,16 +329,19 @@ def render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel=None
         t = _lap(profile, "track", t)
         plays = []
         if play_tracker is not None:
-            play_tracker.update(tracked)  # overlays own-play side + logs opponent plays
+            play_tracker.update(tracked)  # overlays own-play side + logs opponent plays (individuals)
             plays = [(e.t, e.card) for e in play_tracker.opponent_plays]
         t = _lap(profile, "plays", t)
         tower_hp = tower_tracker.update(frame) if tower_tracker is not None else {}
         tower_info = tower_panel.update(comps, tower_hp) if tower_panel is not None else {}
         t = _lap(profile, "towers", t)
-        annotated = annotate(frame, tracked + comps)
-        panel = game_panel(tracked, tower_info, plays, annotated.shape[0])
+        # --group: collapse swarm clusters (Skeleton Army -> one 'skeleton xN') for the
+        # overlay + panel. Tracking/plays stay on individuals; this is just the view.
+        view = group_swarms(tracked) if group else tracked
+        annotated = annotate(frame, view + comps, detailed)
+        panel = game_panel(view, tower_info, plays, annotated.shape[0])
     else:
-        annotated = annotate(frame, raw)
+        annotated = annotate(frame, raw, detailed)
         panel = info_panel(raw, annotated.shape[0])
     t = _lap(profile, "draw", t)
     if banked is not None:
@@ -372,7 +392,18 @@ def main():
     p.add_argument("--profile", action="store_true",
                    help="Print per-stage timings (detect/track/plays/towers/draw) every 30 frames "
                         "to find where time goes.")
+    p.add_argument("--group", action="store_true",
+                   help="Collapse swarm clusters (Skeleton Army, Goblin Gang, Bats, Minions, "
+                        "Barbarians, ...) into one 'name xN' box + panel row. View only -- "
+                        "tracking/plays still run on individuals. Implies --track.")
+    p.add_argument("--detailed", action="store_true",
+                   help="Also draw the per-troop system internals on the arena -- the health "
+                        "`bar`, `bar-level` and `clock` boxes + the LvN/Lv? plate. OFF by default "
+                        "so the view isn't 2-3 labels deep on every troop (level/HP are still in "
+                        "the side panel; side/hp are read from these internally regardless).")
     args = p.parse_args()
+    if args.group:
+        args.track = True   # grouping operates on the tracker's units
 
     det = make_detector(args.conf, args.model, args.read_levels)
     ui_filter = filter_ui if args.no_ui else (lambda d: d)
@@ -393,7 +424,7 @@ def main():
         frame = cv2.imread("test_screenshot.png")
         if frame is None:
             raise FileNotFoundError("test_screenshot.png not found.")
-        cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile)))
+        cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile, args.group, args.detailed)))
         print("Static frame — press any key in the window to close.")
         cv2.waitKey(0)
         cv2.destroyAllWindows()
@@ -409,7 +440,7 @@ def main():
             frame = capture.screenshot()
             if args.profile:
                 _prof["capture"] += time.perf_counter() - _t
-            cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile)))
+            cv2.imshow(window, _fit(render_frame(frame, det, ui_filter, tracker, tower_tracker, tower_panel, args.collect_levels, play_tracker, args.profile, args.group, args.detailed)))
             if (cv2.waitKey(1) & 0xFF) == ord("q"):
                 break
     finally:

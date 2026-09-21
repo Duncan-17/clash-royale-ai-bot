@@ -284,5 +284,7 @@ def _card_matches_unit(card, unit_type):
     taxonomies differ slightly, e.g. archers/archer, goblins/goblin)."""
     if not card or not unit_type:
         return False
-    a, b = card.replace("_", ""), unit_type.replace("_", "")
+    # strip BOTH separators so the hyphen slug (x-bow) matches the underscore class (x_bow)
+    a = card.replace("_", "").replace("-", "")
+    b = unit_type.replace("_", "").replace("-", "")
     return a == b or a.rstrip("s") == b.rstrip("s") or a in b or b in a

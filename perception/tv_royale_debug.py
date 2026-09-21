@@ -42,6 +42,7 @@ from game_knowledge.tv_royale_cycles import DualCycleTracker, CLASSIFIER_CONF_TH
 from perception.card_detector import load_templates
 from perception.overlay import draw_box, draw_label, _alpha_rect
 from perception.tv_royale_hand_reader import read_hand, read_both_hands_classifier
+from perception.yolo_detector import NON_UNIT_CLASSES
 
 WINDOW = "TV Royale hand debug (q=quit)"
 
@@ -176,8 +177,6 @@ PANEL_W_CYC = 470
 ENE_COL = (70, 70, 235)    # enemy / top player (red, BGR)
 FRI_COL = (235, 170, 70)   # friendly / bottom player (blue, BGR)
 PLACE_COL = (0, 235, 235)  # placement marker (yellow, BGR)
-# detector raw_names that aren't troops/buildings (bars, badges, clocks, tower bars).
-NON_UNIT_RAW = {"bar", "bar-level", "clock", "tower-bar", "king-tower-bar"}
 
 # Panel text sizing. The whole view is downscaled by _fit before display, so these
 # are deliberately large to stay readable. Tune here.
@@ -559,8 +558,7 @@ def main():
                 units = None
                 if detector is not None:
                     units = [d for d in detector.detect(frame)
-                             if d.get("raw_name") not in NON_UNIT_RAW
-                             and "tower" not in (d.get("name") or "")]
+                             if d.get("raw_name") not in NON_UNIT_CLASSES]
                     # enemy/friendly for fresh/undamaged troops (#3): bar-colour >
                     # board-learned owner > deck prior > position, so the overlay + logged
                     # board show the right team before a health bar appears.

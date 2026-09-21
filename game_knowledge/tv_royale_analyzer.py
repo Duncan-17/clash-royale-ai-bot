@@ -27,11 +27,9 @@ import time
 from config import tv_royale_regions as R
 from game_knowledge.tv_royale_cycles import DualCycleTracker
 from perception.tv_royale_hand_reader import read_both_hands_classifier
+from perception.yolo_detector import NON_UNIT_CLASSES
 
 PLAYS_LOG = "data/tv_royale_plays_log.jsonl"
-# detector raw_names that are NOT troops/buildings (HP bars, level badges, deploy
-# clocks, tower bars) -- excluded from the board-unit set fed to the learning logger.
-NON_UNIT_RAW = {"bar", "bar-level", "clock", "tower-bar", "king-tower-bar"}
 RESTRICT_MIN = 8   # soft-restrict a hand's reads to its deck once this many cards are
 # known/learned for that player (i.e. the full 8-card deck) -- see #2 cross-education.
 
@@ -85,8 +83,11 @@ class TvrAnalyzer:
         out = self.cycles.update(enemy, friendly, elix_e, elix_f, now)
 
         dets = self.detector.detect(frame) if self.detector is not None else None
-        board_units = ([d for d in dets if d.get("raw_name") not in NON_UNIT_RAW
-                        and "tower" not in (d.get("name") or "")] if dets else None)
+        # board = troops/buildings only. Filter on the detector's authoritative non-unit
+        # set (drops towers/bars/clock/emote/text/elixir/selected) -- NOT a "'tower' in
+        # name" test, which would also drop the real bomb_tower / inferno_tower buildings.
+        board_units = ([d for d in dets if d.get("raw_name") not in NON_UNIT_CLASSES]
+                       if dets else None)
         resolved = None
         if board_units is not None:                         # enemy/friendly attribution (#3)
             from data.learning_logger import resolve_sides

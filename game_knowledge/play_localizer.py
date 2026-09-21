@@ -51,16 +51,23 @@ def _card_ref():
         return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
 
 
+def _ref(card):
+    """card_reference entry, hyphen-tolerant: keys are underscore (x_bow) but a deck/
+    hand slug can be hyphenated (x-bow) -- try the given slug, then its underscore form."""
+    r = _card_ref()
+    return r.get(card) or r.get((card or "").replace("-", "_"))
+
+
 def card_category(card):
     """'troop' | 'building' | 'spell' | None, from card_reference.json."""
-    e = _card_ref().get(card)
+    e = _ref(card)
     return e.get("category") if e else None
 
 
 def detected_classes(card):
     """The detector class name(s) this card shows up as -- a set (empty for spells and
     the detector-gap troops, whose detected_class is null)."""
-    e = _card_ref().get(card)
+    e = _ref(card)
     dc = e.get("detected_class") if e else None
     return set(dc) if dc else set()
 

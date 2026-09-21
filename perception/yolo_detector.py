@@ -49,6 +49,18 @@ DEFAULT_IMGSZ = 896  # matches the training imgsz
 ARENA_Y_MIN = 0.05
 ARENA_Y_MAX = 0.85
 
+# Raw detector classes that are NOT troops/buildings -- the towers, HP/level bars,
+# deploy clock, and other UI. The AUTHORITATIVE list (this is what detect() splits on
+# with include_non_units); consumers that want "board troops only" should filter with
+# THIS, not a hand-kept subset or a "'tower' in name" substring test (which also drops
+# the real buildings bomb-tower / inferno-tower).
+NON_UNIT_CLASSES = {
+    "king-tower", "queen-tower", "cannoneer-tower", "dagger-duchess-tower",
+    "dagger-duchess-tower-bar", "tower-bar", "king-tower-bar", "bar",
+    "bar-level", "clock", "emote", "text", "elixir", "selected",
+    "skeleton-king-bar",
+}
+
 
 def _to_our_name(name: str) -> str:
     """KataCR-style class name (hyphens) -> this project's slug convention."""
@@ -74,13 +86,9 @@ class YoloDetector:
         self.device = 0 if torch.cuda.is_available() else "cpu"
         # Non-unit UI classes (mirror katacr_detector's split) -- filtered out
         # unless include_non_units, so unit_tracker/opponent_play_tracker only
-        # ever see troops/buildings/spells.
-        self._non_unit = {
-            "king-tower", "queen-tower", "cannoneer-tower", "dagger-duchess-tower",
-            "dagger-duchess-tower-bar", "tower-bar", "king-tower-bar", "bar",
-            "bar-level", "clock", "emote", "text", "elixir", "selected",
-            "skeleton-king-bar",
-        }
+        # ever see troops/buildings/spells. Shared as module-level NON_UNIT_CLASSES
+        # so board consumers filter on the same authoritative set.
+        self._non_unit = NON_UNIT_CLASSES
 
     def _pad_to_train_aspect(self, img):
         """Pad the frame horizontally to TRAIN_ASPECT. Returns (padded, x_offset)

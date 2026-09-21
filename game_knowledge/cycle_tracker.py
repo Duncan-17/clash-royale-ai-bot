@@ -186,6 +186,14 @@ def _slug(name: str) -> str:
     return s.strip("_")
 
 
+def _cost_key(slug: str) -> str:
+    """Cost/reference tables key hyphens as underscores (X-Bow -> 'x_bow', via _slug),
+    but the deck/hand slug for X-Bow is 'x-bow' (assets/hand_templates/x-bow). Normalize
+    so its cost still resolves -- without this an x-bow deck logs 'no elixir cost' and its
+    plays never pass the elixir cross-check."""
+    return (slug or "").replace("-", "_")
+
+
 def load_card_costs(cards_json_path: str = CARDS_JSON) -> dict:
     """Returns {slug_name: elixir_cost} for every card in config/cards.json
     that has a fixed cost, keyed the same way deck.txt/hand_templates are,
@@ -224,7 +232,7 @@ class CycleTracker:
         self._has_seed = bool(self.deck)   # a known deck was provided (vs pure learn)
         self.confidence_threshold = confidence_threshold
         self.costs = load_card_costs()
-        missing = [c for c in self.deck if c not in self.costs]
+        missing = [c for c in self.deck if _cost_key(c) not in self.costs]
         if missing:
             print(f"Warning: no elixir cost found for {missing} — plays of "
                   f"these card(s) will never pass the elixir cross-check.")
@@ -352,7 +360,7 @@ class CycleTracker:
                        transition_t: float = None):
         """Record a play, or return None if it fails a validity gate (it was a
         misread of a resting card, not a real play)."""
-        cost = self.costs.get(played)
+        cost = self.costs.get(_cost_key(played))
         # Mirror has no FIXED cost (load_card_costs skips it): it copies this
         # player's LAST played card at +1 elixir. So when an in-deck Mirror is
         # played, resolve its cost from this player's previous play (self.plays[-1],

@@ -63,7 +63,10 @@ class GameState:
     elixir: float                  # current elixir (int value from the number read)
     elixir_fraction: float         # 0-1 progress toward the next point
     hand: list                     # 4 HandSlot
-    units: list = field(default_factory=list)   # tracked unit dicts
+    units: list = field(default_factory=list)   # tracked unit dicts (INDIVIDUALS)
+    groups: list = field(default_factory=list)  # swarm-grouped view (blobs + non-swarm
+    # units): a Skeleton Army reads as one 'skeleton' entity with count. Non-lossy --
+    # `units` still holds every individual; the policy uses whichever view fits.
     towers: dict = field(default_factory=dict)  # name -> {"alive": bool, "hp": float|None}
 
     def enemy_units(self):
@@ -71,6 +74,12 @@ class GameState:
 
     def ally_units(self):
         return [u for u in self.units if u.get("side") == "ally"]
+
+    def enemy_groups(self):
+        return [u for u in self.groups if u.get("side") == "enemy"]
+
+    def ally_groups(self):
+        return [u for u in self.groups if u.get("side") == "ally"]
 
     def affordable(self):
         """Known hand cards we can pay for right now, cheapest first."""
@@ -89,6 +98,7 @@ def build_game_state(frame, tracked_units, tower_info=None,
     """
     from perception.card_detector import identify_hand, load_templates as load_hand
     from perception.elixir_counter import read_elixir, load_templates as load_elixir
+    from perception.swarm_grouper import group_swarms
 
     if hand_templates is None:
         hand_templates = load_hand()
@@ -106,5 +116,6 @@ def build_game_state(frame, tracked_units, tower_info=None,
         elixir_fraction=el["fraction"],
         hand=hand,
         units=list(tracked_units),
+        groups=group_swarms(tracked_units),   # swarm blobs + non-swarm units (see field note)
         towers=dict(tower_info or {}),
     )
