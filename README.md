@@ -1,9 +1,61 @@
-# Clash Royale AI — Phase 1 setup
+# Clash Royale AI Bot
 
-This is the control + capture plumbing from the roadmap's Phase 1: reliable
-screenshot capture and tap/drag control against LDPlayer, no AI yet.
+A bot that plays Clash Royale from raw screen pixels. It captures frames from an
+Android emulator (LDPlayer), works out what's on the board with a custom-trained
+YOLOv8 detector, decides what card to play and where, and taps it in through ADB.
+No game memory reading or private APIs: it sees the same screen a player does.
 
-## One-time setup
+I'm building this solo to learn computer vision, ML training, and how to wire
+open-source tools into one working system. Work in progress (Aug 2026 – present).
+
+## How it works
+
+```
+LDPlayer (emulator) --ADB screenshot--> perception --> game state --> policy --ADB tap--> LDPlayer
+```
+
+1. **Perception** (`perception/`)
+   - Custom **YOLOv8l unit detector** fine-tuned on synthetic + real frames (v1 → v4).
+     Beats the open-source KataCR detector on recall and reads troop side and spawn natively.
+   - Health bars and level badges decide each unit's side, HP and level.
+   - Thin tracker gives stable unit IDs and smooths class/side flicker between frames.
+   - Hand cards (template matching + a YOLOv8-cls classifier), elixir count, tower HP.
+2. **Game knowledge** (`game_knowledge/`)
+   - Builds a `GameState` (elixir, hand, units, towers, lane zones).
+   - Cycle tracker reconstructs the opponent's hidden card rotation from what they play.
+   - Play tracker ties newly spawned units back to the card that made them.
+3. **Decision + control** (`game_knowledge/policy.py`, `control/`)
+   - Rule-based baseline policy picks a card and a placement; the bot loop runs
+     perceive → decide → act live (dry-run by default).
+4. **Data engine** (`data/`, `training/`)
+   - Unattended TV Royale watcher logs top players' matches (both players' plays) as
+     training data for imitation learning, and queues uncertain reads for review.
+   - Dataset generators and a fine-tune harness to retrain the detector.
+
+## Status
+
+| Stage | State |
+|---|---|
+| Emulator control + capture | Done |
+| Perception (detector, tracker, hand, elixir, towers, levels) | Done, iterating |
+| Rule-based bot playing live | Working baseline |
+| TV Royale data collection + analysis | Working |
+| Learned policy (imitation → RL) | Next |
+
+## Tech
+
+Python · Ultralytics YOLOv8 · PyTorch (CUDA) · ONNX Runtime · OpenCV · ADB · Clash Royale API
+
+## Not in this repo
+
+Trained weights (`*.pt`), generated datasets, logs, and third-party reference code
+(`vendor/`) are gitignored because of size. The API key lives in `.env`
+(see `.env.example`).
+
+---
+
+## Setup (Windows + LDPlayer)
+
 
 1. **Enable ADB debugging in LDPlayer.** Settings (wrench icon) → Others/Basic
    settings tab → turn on ADB debugging. Without this, nothing here can
@@ -31,7 +83,10 @@ screenshot capture and tap/drag control against LDPlayer, no AI yet.
    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
    ```
 
-4. **(Optional) Fetch the experimental detector weights.** `perception/katacr_detector.py`
+4. **API key (optional, for `fetch_card_roster.py`).** Copy `.env.example` to
+   `.env` and paste your Clash Royale API key.
+
+5. **(Optional) Fetch the experimental detector weights.** `perception/katacr_detector.py`
    can run KataCR's YOLOv8 detectors instead of the bundled `units.onnx` — more
    accurate, and the weights are trainable (see `Project_Status`). They're not
    committed (88MB each); download links are in that module's docstring, and it

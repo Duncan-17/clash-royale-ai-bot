@@ -21,3 +21,11 @@ training/datasets/
 training/data/
 *.pt
 training/*.log
+
+# Local editor / assistant settings and secrets
+.claude/
+.env.*
+!.env.example
+
+# Bot-collected review queues (screenshots + JSON), regenerated during runs
+assets/unlabeled_*/
