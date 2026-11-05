@@ -3,7 +3,8 @@
 A bot that plays Clash Royale from raw screen pixels. It captures frames from an
 Android emulator (LDPlayer), works out what's on the board with a custom-trained
 YOLOv8 detector, decides what card to play and where, and taps it in through ADB.
-No game memory reading or private APIs: it sees the same screen a player does.
+No game memory reading or private APIs: it sees the same screen a player does and 
+operates with the same general controls of regular player.
 
 I'm building this solo to learn computer vision, ML training, and how to wire
 open-source tools into one working system. Work in progress (Aug 2026 – present).
